@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.DS_Store
+*.log
+.venv/
+venv/
+
+# Large generated training artifacts (model weights, replay buffers) --
+# regenerate locally via scripts/train.py or live_trainer.py; not source.
+results/checkpoints/
+results/live_checkpoints/

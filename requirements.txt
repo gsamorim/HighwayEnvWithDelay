@@ -1,0 +1,10 @@
+gymnasium>=1.0
+highway-env>=1.10
+torch>=2.0
+pygame>=2.5
+numpy
+Pillow
+matplotlib
+imageio
+imageio-ffmpeg
+pytest

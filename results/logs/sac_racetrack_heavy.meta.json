@@ -1,0 +1,30 @@
+{
+  "env": "racetrack",
+  "agent": "sac",
+  "traffic": "heavy",
+  "obs_dim": 48,
+  "act_dim": 2,
+  "args": {
+    "env": "racetrack",
+    "agent": "sac",
+    "traffic": "heavy",
+    "total_steps": 30000,
+    "start_steps": 1500,
+    "eval_every_steps": 5000,
+    "eval_episodes": 3,
+    "checkpoint_every_steps": 10000,
+    "buffer_size": 100000,
+    "batch_size": 256,
+    "updates_per_step": 1,
+    "learning_starts": 1000,
+    "seed": 0,
+    "run_name": "sac_racetrack_heavy",
+    "log_dir": "results/logs",
+    "checkpoint_dir": "results/checkpoints",
+    "plot_dir": "results/plots",
+    "high_speed_reward": 0.4,
+    "collision_reward": -5.0,
+    "action_reward": -0.1
+  },
+  "logged_at": "2026-09-20 18:18:11"
+}
