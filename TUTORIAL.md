@@ -1,139 +1,111 @@
-# Tutorial: editar config, rodar um grupo de experimentos e gravar o vídeo da melhor run
+# Treine e grave seu agente no Racetrack
 
-Este guia assume Windows + PowerShell (terminal integrado do VS Code). Os
-tempos de treino abaixo (~2 min por run) foram medidos numa máquina de
-referência a ~44-46 steps/seg (SAC, estado aumentado ligado); na sua máquina
-pode variar — veja a nota de calibração no passo 3.
+Compare três versões da pista oval, escolha o melhor resultado da demonstração e grave um MP4 com o agente treinado. O roteiro usa Windows e PowerShell. Cada rodada treina um agente SAC do zero, com a mesma configuração de tráfego e atraso.
 
-## 1. Abrir o projeto no VS Code
+## 1. Prepare o terminal
 
-1. Abra o VS Code.
-2. `File > Open Folder...` e selecione:
-   `C:\Users\Uvood\OneDrive\Documentos\Claude Projects\rl_racetrack`
-3. Abra um terminal integrado: `Terminal > New Terminal` (abre PowerShell
-   nessa mesma pasta).
-4. Ative o ambiente Python que você já usa para `scripts/train.py` (venv ou
-   conda). Se ainda não tem um:
-   ```powershell
-   python -m venv venv
-   .\venv\Scripts\Activate.ps1
-   pip install -r requirements.txt
-   ```
+No VS Code, abra a pasta `rl_racetrack`, onde estão `scripts/` e `requirements.txt`. Abra **Terminal → New Terminal** e selecione o PowerShell.
 
-## 2. Editar o config único (`configs/racetrack_experiment_config.jsonc`)
-
-No VS Code, abra `configs/racetrack_experiment_config.jsonc` (painel
-esquerdo, pasta `configs/`). É o arquivo único que controla ambiente, pista,
-tráfego e atraso — comentários `//` marcam o que não é válido em cada
-ambiente. Hoje ele já vem configurado para:
-
-- `"env": "racetrack_oval"`, `"env_id": "racetrack-oval-v0"`
-- `"oval_straight_length_m": 30` (uma das 3 variações escolhidas: 80/30/5)
-- `"enable_delay_wrapper": true`, atraso de ação sorteado entre 0 e 3 passos
-  no treino (`action_delay_min/max_steps`), conhecido pelo agente
-  (`delay_known_to_agent: true`)
-- `"traffic": "medium"`
-
-Para o grupo de experimentos deste tutorial, vamos comparar as **3 variações
-do comprimento da reta do oval** (80 m, 30 m, 5 m) com o mesmo agente
-(SAC + estado aumentado). Não precisa editar o arquivo pra isso — vamos
-sobrepor `oval_straight_length_m` direto na linha de comando a cada run (o
-arquivo fica como o "padrão de produção"; qualquer flag de CLI sempre
-sobrepõe o que está no `.jsonc`). Mas se você quiser fixar uma variação como
-novo padrão, é só editar o valor de `"oval_straight_length_m"` no arquivo e
-salvar.
-
-## 3. Rodar o grupo de experimentos (~2 min cada)
-
-Os flags abaixo encurtam um treino de verdade (que seria `--total-steps`
-bem maior, ~50k+) para uma demonstração rápida: menos passos totais, menos
-aquecimento aleatório, avaliação só no final. Rode os 3 comandos em
-sequência (cada um ~2 min na máquina de referência; total ~6 min):
+Se já tem um ambiente Python com as dependências do projeto, ative-o e defina qual comando vai chamar o Python.
 
 ```powershell
-python scripts/train.py --config configs/racetrack_experiment_config.jsonc `
-    --oval-straight-length-m 80 --total-steps 5000 --start-steps 300 `
-    --learning-starts 300 --eval-every-steps 2500 --eval-episodes 2 `
-    --checkpoint-every-steps 5000 --run-name oval80_demo
-
-python scripts/train.py --config configs/racetrack_experiment_config.jsonc `
-    --oval-straight-length-m 30 --total-steps 5000 --start-steps 300 `
-    --learning-starts 300 --eval-every-steps 2500 --eval-episodes 2 `
-    --checkpoint-every-steps 5000 --run-name oval30_demo
-
-python scripts/train.py --config configs/racetrack_experiment_config.jsonc `
-    --oval-straight-length-m 5 --total-steps 5000 --start-steps 300 `
-    --learning-starts 300 --eval-every-steps 2500 --eval-episodes 2 `
-    --checkpoint-every-steps 5000 --run-name oval5_demo
+$python = "python"
 ```
 
-Cada run imprime no terminal uma linha final assim:
+Se estiver começando do zero, crie o ambiente e instale as dependências.
 
+```powershell
+python -m venv .venv
+$python = ".\.venv\Scripts\python.exe"
+& $python -m pip install -r requirements.txt
 ```
+
+Mantenha o mesmo terminal aberto durante o tutorial. Os próximos passos reutilizam as variáveis definidas nele.
+
+## 2. Rode as três variações da pista
+
+A [configuração do experimento](configs/racetrack_experiment_config.jsonc) vem com uma reta de **30 m**, tráfego médio e atraso de ação sorteado entre **0 e 3 passos**. O agente recebe o tempo restante dos comandos pendentes.
+
+O bloco abaixo testa retas de **80 m, 30 m e 5 m**. A opção `--oval-straight-length-m` muda a pista para cada rodada, e o arquivo de configuração segue com seus valores salvos. O treino imprime a avaliação no fim de cada rodada e guarda os resultados em uma pasta com data e hora.
+
+```powershell
+$config = "configs/racetrack_experiment_config.jsonc"
+$saida = "results/tutorial/$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+$passos = 5000
+
+foreach ($reta in 80, 30, 5) {
+    $nome = "oval$($reta)m"
+    Write-Host "Treinando $nome. Resultados em $saida"
+
+    & $python scripts/train.py --config $config --agent sac --seed 0 `
+        --oval-straight-length-m $reta --run-name $nome `
+        --total-steps $passos --start-steps 300 --learning-starts 300 `
+        --eval-every-steps $passos --eval-episodes 2 --checkpoint-every-steps $passos `
+        --log-dir "$saida/logs" --plot-dir "$saida/plots" --checkpoint-dir "$saida/checkpoints"
+
+    if ($LASTEXITCODE -ne 0) { throw "O treino $nome falhou." }
+}
+```
+
+O tempo varia com a máquina. Para encurtar a demonstração, defina `$passos = 2500` **antes de iniciar o grupo**. Assim as três rodadas têm o mesmo orçamento e a avaliação acontece no último passo de cada uma.
+
+**Largada nas retas curtas.** O `SafeSpawnWrapper` corrige a posição inicial do carro do agente se o HighwayEnv o colocar fora da faixa. Com isso, as retas de 5 m e 30 m voltam a fazer parte do roteiro. Com tráfego, ainda pode haver colisão logo após a largada.
+
+## 3. Escolha o agente para gravar
+
+Logo abaixo de cada `Treinando oval…`, procure uma linha de avaliação como a do exemplo.
+
+```text
 [eval @ step    5000] return=35.34±7.54 crash_rate=0.00 mean_speed=6.14 (109s elapsed)
 ```
 
-**Calibração de tempo**: se o seu primeiro run demorar bem mais ou menos que
-~2 min, ajuste `--total-steps` proporcionalmente nos próximos dois (ex.: se
-demorou 4 min, use `--total-steps 2500` nos restantes).
+Compare o número **antes do `±`** em `return`, que é o retorno médio da avaliação. Escolha a maior média. Em caso de empate, use a menor `crash_rate`, a fração dos episódios em que houve colisão. Anote o comprimento da reta correspondente.
 
-Isso é uma demonstração, não um treino de verdade — com só 5000 passos o
-SAC mal começou a aprender (o estudo de benchmark no próprio `.jsonc`,
-chave `_benchmark_protocol_reference`, recomenda orçamentos bem maiores e
-múltiplos seeds por configuração para resultados que valham a pena reportar).
+Os arquivos abaixo ficam dentro de `$saida`. Aqui, `oval80m` corresponde à reta de 80 m.
 
-## 4. Escolher a melhor run
+| Arquivo | Para que serve |
+| --- | --- |
+| `checkpoints/oval80m_final.pt` | Modelo treinado usado na gravação. |
+| `logs/oval80m.csv` | Métricas por episódio **durante o treino**. |
+| `logs/oval80m.meta.json` | Argumentos usados na rodada. |
+| `plots/oval80m.png` | Curvas de treino. |
 
-Compare a linha final `[eval @ step 5000] return=...` impressa por cada um
-dos 3 comandos (ou abra os CSVs em `results/logs/oval80_demo.csv` /
-`oval30_demo.csv` / `oval5_demo.csv` — coluna `episode_return` ao longo do
-treino). Escolha a que tiver maior `return` (e, em caso de empate, menor
-`crash_rate`). O checkpoint correspondente está em
-`results/checkpoints/<run_name>_final.pt`.
+Com uma semente e dois episódios de avaliação, o resultado serve para escolher um vídeo da demonstração. Para comparar desempenho com mais confiança, repita cada configuração com várias sementes e mais episódios de avaliação.
 
-## 5. Gravar o vídeo da melhor run
+## 4. Grave o MP4
 
-Troque `oval30_demo` abaixo pelo nome da run vencedora:
+Na primeira linha, ajuste `80` para o comprimento que você escolheu. A mesma variável seleciona a geometria da pista e o arquivo do modelo.
 
 ```powershell
-python scripts/record.py --config configs/racetrack_experiment_config.jsonc `
-    --oval-straight-length-m 30 `
-    --checkpoint results/checkpoints/oval30_demo_final.pt `
-    --episodes 3 --out results/videos/best_run.mp4
+$reta = 80
+$nome = "oval$($reta)m"
+
+& $python scripts/record.py --config $config --agent sac `
+    --oval-straight-length-m $reta `
+    --checkpoint "$saida/checkpoints/${nome}_final.pt" `
+    --episodes 3 --out "$saida/best_run.mp4"
+
+if ($LASTEXITCODE -ne 0) { throw "A gravação falhou." }
+Invoke-Item "$saida/best_run.mp4"
 ```
 
-Pontos importantes:
+O gravador gera os quadros em segundo plano, salva o MP4 e imprime `Saved video:` com o caminho. A última linha abre o arquivo no player padrão do Windows.
 
-- **Use sempre `--config` (ou os mesmos flags) na gravação que você usou no
-  treino daquela run**, especialmente `--enable-delay-wrapper`. Esse flag
-  muda o tamanho da observação; gravar sem ele contra um checkpoint treinado
-  com ele dá erro claro (`size mismatch ... torch.Size([256, 80])` vs
-  `torch.Size([256, 48])`) em vez de rodar errado silenciosamente — já
-  validei esse caso.
-- `--oval-straight-length-m` na gravação só muda a geometria da pista
-  (não o tamanho da observação), então pode inclusive usar um valor
-  diferente do treino de propósito, para testar generalização.
-- Mesmo com uma janela do Windows disponível, o `record.py` sempre usa o
-  driver de vídeo "dummy" do SDL para renderizar — é esperado não abrir
-  nenhuma janela; o vídeo sai direto em `results/videos/best_run.mp4`.
+Para reproduzir a configuração da pista, use o mesmo `--config` e repita qualquer opção de pista, tráfego ou atraso que você tenha alterado no treino. Se aparecer `size mismatch` ao carregar o modelo, confira especialmente `enable_delay_wrapper`. Essa opção altera o tamanho da entrada do agente e precisa coincidir entre treino e gravação.
 
-Abra o vídeo final no Explorer/VS Code: `results/videos/best_run.mp4`.
+## Opções úteis para outros experimentos
 
-## Referência rápida de flags (todos opcionais, todos sobrepõem o `.jsonc`)
+As opções na linha de comando têm prioridade sobre o arquivo JSONC.
 
-| Flag | O que faz |
-|---|---|
-| `--env racetrack` \| `racetrack_oval` | troca o registro de ambiente |
-| `--env-id racetrack-oval-v1` | troca o id nativo do gym direto |
-| `--oval-straight-length-m N` | comprimento da reta do oval (só `env_id` oval) |
-| `--oval-obstacle-preset block_lane\|force_decision` | obstáculo nativo do oval |
-| `--traffic-speed-min/--traffic-speed-max` | faixa de velocidade do tráfego (precisa dos dois juntos) |
-| `--traffic none\|light\|medium\|heavy\|jam` | intensidade do tráfego |
-| `--enable-delay-wrapper` | liga o estado aumentado com atraso (RDMDP) |
-| `--action-delay-min/max-steps` | faixa do atraso de ação sorteado |
-| `--delay-known-to-agent` | agente recebe o tempo restante real de cada comando pendente |
-| `--observation-delay-steps` | atraso simples (sem reordenação) na observação |
+| Quero mudar | Opção |
+| --- | --- |
+| Variante da pista | Use `--env racetrack_oval` e um `--env-id` oval. Ao trocar para uma pista comum, escolha também um `env_id` compatível e deixe as opções do oval como `null` no JSONC. |
+| Comprimento da reta ou obstáculo | `--oval-straight-length-m` ou `--oval-obstacle-preset` com `block_lane` ou `force_decision`. |
+| Intensidade do tráfego | `--traffic` com `none`, `light`, `medium`, `heavy` ou `jam`. |
+| Velocidade inicial do tráfego | `--traffic-speed-min` e `--traffic-speed-max` juntos, em m/s. |
+| Atraso de ações | Com `enable_delay_wrapper` ligado, ajuste `--action-delay-min-steps` e `--action-delay-max-steps` entre 0 e 6. Use 0 nos dois para manter a mesma entrada do agente com atraso de ação zero. |
+| Tempo de entrega visível para o agente | `--delay-known-to-agent` mostra o tempo restante dos comandos pendentes. Para ocultá-lo, use `"delay_known_to_agent": false` no JSONC. |
+| Atraso na observação | `--observation-delay-steps` define quantos passos a observação leva para chegar ao agente. |
+| Agente de referência | `--agent random` usa ações aleatórias. O agente treinável neste roteiro é o SAC. |
 
-Agentes disponíveis hoje: **só SAC** (`--agent sac`, default) e um baseline
-aleatório (`--agent random`). PPO (e as variantes PPO+estado aumentado)
-ainda não existem no repo — ficam para uma próxima versão.
+Para mudar o padrão das próximas rodadas, edite o [arquivo de configuração](configs/racetrack_experiment_config.jsonc). Para ver todas as opções, rode `& $python scripts/train.py --help` ou `& $python scripts/record.py --help`.

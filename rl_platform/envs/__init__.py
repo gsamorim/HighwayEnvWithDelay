@@ -7,6 +7,7 @@ from .wrappers import (
     HighSpeedRewardWrapper,
     TrafficSpeedWrapper,
     DelayedActionMDPWrapper,
+    SafeSpawnWrapper,
     MAX_DELAY_STEPS,
 )
 
@@ -24,5 +25,6 @@ __all__ = [
     "HighSpeedRewardWrapper",
     "TrafficSpeedWrapper",
     "DelayedActionMDPWrapper",
+    "SafeSpawnWrapper",
     "MAX_DELAY_STEPS",
 ]

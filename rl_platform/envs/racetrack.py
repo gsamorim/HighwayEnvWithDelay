@@ -35,6 +35,7 @@ from .wrappers import (
     HighSpeedRewardWrapper,
     TrafficSpeedWrapper,
     DelayedActionMDPWrapper,
+    SafeSpawnWrapper,
 )
 
 # Named traffic presets -> number of other (IDM-controlled) vehicles.
@@ -245,6 +246,10 @@ def make_racetrack_env(
         render_mode=render_mode,
         config=config.to_highway_config(),
     )
+    # Always first: works around a real HighwayEnv bug where the controlled
+    # vehicle can spawn off-lane on a short oval straight (see wrappers.py
+    # docstring). No-op whenever the native spawn was already valid.
+    env = SafeSpawnWrapper(env)
     if render_mode is not None:
         env = ForceRenderEnabled(env)
     if config.traffic_speed_min is not None or config.traffic_speed_max is not None:

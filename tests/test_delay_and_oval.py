@@ -235,3 +235,35 @@ def test_config_loader_roundtrip(tmp_path):
         "oval_straight_length_m": 15,
         "enable_delay_wrapper": True,
     }
+
+
+def test_short_oval_straight_spawns_controlled_vehicle_on_track():
+    """Regression test for a real HighwayEnv bug: RacetrackEnvOval's
+    _make_vehicles() samples the controlled vehicle's initial longitudinal
+    position from a hardcoded uniform(20.0, 50.0), regardless of the
+    configured `length`. On a short straight (confirmed at the project's own
+    30m and 5m oval variants) that range overruns the actual lane, spawning
+    the car physically off-track. SafeSpawnWrapper (applied by default in
+    make_racetrack_env/make_racetrack_oval_env) must catch and fix this."""
+    for length in (5, 30, 80):
+        for seed in range(10):
+            env = make_env("racetrack_oval", oval_straight_length_m=length, traffic_density="none")
+            obs, info = env.reset(seed=seed)
+            vehicle = env.unwrapped.vehicle
+            lane = env.unwrapped.road.network.get_lane(vehicle.lane_index)
+            assert lane.on_lane(vehicle.position), (
+                f"controlled vehicle spawned off-lane at oval_straight_length_m={length}, seed={seed}"
+            )
+            assert info["rewards"]["on_road_reward"]
+            env.close()
+
+
+def test_safe_spawn_fix_is_a_noop_when_native_spawn_was_already_valid():
+    """On a normal-length straight (no bug triggered), the wrapper must not
+    change anything observable: info/obs come straight from the native env."""
+    env = make_env("racetrack", traffic_density="none")  # non-oval, never affected
+    obs, info = env.reset(seed=0)
+    vehicle = env.unwrapped.vehicle
+    lane = env.unwrapped.road.network.get_lane(vehicle.lane_index)
+    assert lane.on_lane(vehicle.position)
+    env.close()

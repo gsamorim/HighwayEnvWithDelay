@@ -388,3 +388,62 @@ class DelayedActionMDPWrapper(gym.Wrapper):
         info = dict(info)
         info["delay_debug"] = debug
         return flat_obs, reward, terminated, truncated, info
+
+
+class SafeSpawnWrapper(gym.Wrapper):
+    """Works around a real HighwayEnv bug in `RacetrackEnvOval._make_vehicles`:
+    the controlled vehicle's initial longitudinal position on the "a"-"b"
+    straight is sampled from a HARDCODED `rng.uniform(20.0, 50.0)`, regardless
+    of the track's configured `length`. With the native default (`length`
+    ~100, straight lane ~101m long) that's always safely inside the segment.
+    But with a short straight -- exactly the "3 oval variations" this project
+    uses (80/30/5 m) -- that hardcoded range can and does overrun the actual
+    lane: at `length=5` (lane length 6m) it ALWAYS does (confirmed 20/20
+    resets); at `length=30` (lane length 31m) it does about a quarter of the
+    time; `length=80` (lane length 81m) is safe. The car ends up extrapolated
+    past the straight's end, off any real lane -- which is exactly the "spawn
+    fora da pista" symptom.
+
+    This is a bug in the native env, not in our config/wrappers, and it's not
+    reachable through `config=` (the spawn range is hardcoded in
+    `_make_vehicles`, not a config key). Patching/subclassing
+    `RacetrackEnvOval` would violate the project's rule of never touching
+    native HighwayEnv classes, so instead this wrapper runs AFTER the native
+    `reset()`, detects a controlled vehicle that landed off its own assigned
+    lane, and repositions it to a safe longitudinal offset that actually
+    fits within that lane's real length -- then recomputes the observation
+    (and info) so they reflect the corrected position rather than the
+    native, broken one. It's a no-op whenever the native spawn was already
+    valid (e.g. `length=80`, or non-oval tracks), so it's always safe to
+    apply.
+
+    Only the controlled vehicle(s) are affected by this bug -- IDM/other
+    traffic vehicles already sample their longitudinal position from their
+    own lane's real `.length`, confirmed unaffected even at `length=5`.
+    """
+
+    def _fix_offlane_controlled_vehicles(self) -> bool:
+        unwrapped = self.unwrapped
+        road = getattr(unwrapped, "road", None)
+        if road is None:
+            return False
+        fixed_any = False
+        for vehicle in getattr(unwrapped, "controlled_vehicles", []):
+            lane = road.network.get_lane(vehicle.lane_index)
+            if lane.on_lane(vehicle.position):
+                continue
+            margin = 0.5
+            safe_high = max(lane.length - margin, margin)
+            longitudinal = float(road.np_random.uniform(margin, safe_high))
+            vehicle.position = lane.position(longitudinal, 0)
+            vehicle.heading = lane.heading_at(longitudinal)
+            fixed_any = True
+        return fixed_any
+
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        if self._fix_offlane_controlled_vehicles():
+            unwrapped = self.unwrapped
+            obs = unwrapped.observation_type.observe()
+            info = unwrapped._info(obs, action=unwrapped.action_space.sample())
+        return obs, info
