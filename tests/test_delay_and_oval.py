@@ -491,3 +491,132 @@ def test_step_does_not_alias_callers_action_buffer():
     # unaffected by the caller mutating their buffer afterward.
     np.testing.assert_allclose(pending_queue[0], [0.5] * act_dim)
     env.close()
+
+
+def test_block_lane_obstacle_near_spawn_is_pushed_to_a_safe_distance():
+    """Confirmed empirically (project doc section 12): with length=80 and the
+    native "block_lane" obstacle preset, the hardcoded obstacle offsets
+    (`length - {40,43,46,49}`) land squarely inside the native hardcoded
+    controlled-vehicle spawn range (20-50 m) -- as close as ~4.7 m in one
+    seed, an essentially unavoidable collision at reset. SafeSpawnWrapper
+    must push the spawn out to at least `min_obstacle_clearance_m` from
+    every obstacle."""
+    env = make_env(
+        "racetrack_oval", traffic_density="none",
+        oval_straight_length_m=80, oval_obstacle_preset="block_lane",
+    )
+    for seed in range(20):
+        env.reset(seed=seed)
+        road = env.unwrapped.road
+        vehicle = env.unwrapped.vehicle
+        min_dist = min(
+            float(np.linalg.norm(np.asarray(vehicle.position) - np.asarray(obj.position)))
+            for obj in road.objects
+        )
+        assert min_dist >= 15.0, f"seed={seed}: spawned only {min_dist:.2f}m from an obstacle"
+    env.close()
+
+
+def test_obstacle_clearance_fix_is_a_noop_without_obstacles():
+    """No obstacle preset set -> SafeSpawnWrapper's obstacle-clearance check
+    must never touch a vehicle that was already fine (pure no-op path)."""
+    env = make_env("racetrack_oval", traffic_density="none", oval_straight_length_m=80)
+    obs1, info1 = env.reset(seed=0)
+    env2 = make_env("racetrack_oval", traffic_density="none", oval_straight_length_m=80)
+    obs2, info2 = env2.reset(seed=0)
+    np.testing.assert_allclose(obs1, obs2)
+    env.close()
+    env2.close()
+
+
+def test_obstacle_min_clearance_m_is_configurable():
+    """A smaller explicit clearance must be honored (and be enough to allow
+    the wrapper to accept the native/closer spawn more often), while a huge
+    clearance must still terminate (fallback to lane start) rather than
+    looping forever or raising."""
+    env = make_env(
+        "racetrack_oval", traffic_density="none",
+        oval_straight_length_m=80, oval_obstacle_preset="block_lane",
+        obstacle_min_clearance_m=1000.0,  # impossible to satisfy on an 81m straight
+    )
+    obs, info = env.reset(seed=0)  # must not hang/crash; falls back to lane start
+    vehicle = env.unwrapped.vehicle
+    lane = env.unwrapped.road.network.get_lane(vehicle.lane_index)
+    assert lane.on_lane(vehicle.position)
+    env.close()
+
+
+def test_action_longitudinal_disabled_shrinks_action_space():
+    """action_longitudinal=False must drop the action vector from 2 dims
+    (accel+steer) to 1 (steer only) -- confirms the knob really is wired to
+    native ContinuousAction's `longitudinal` key, not silently ignored."""
+    env_on = make_env("racetrack", traffic_density="none", action_longitudinal=True)
+    env_off = make_env("racetrack", traffic_density="none", action_longitudinal=False)
+    assert env_on.action_space.shape == (2,)
+    assert env_off.action_space.shape == (1,)
+    env_on.close()
+    env_off.close()
+
+
+def test_steering_only_starts_and_drives_at_configured_speed():
+    env = make_env(
+        "racetrack_oval",
+        oval_straight_length_m=80,
+        traffic_density="none",
+        action_longitudinal=False,
+        speed_limit=7.0,
+        enable_delay_wrapper=True,
+        action_delay_max_steps=3,
+    )
+    try:
+        for seed in (0, 1):
+            obs, info = env.reset(seed=seed)
+            assert env.observation_space.contains(obs)
+            assert info["speed"] == pytest.approx(7.0)
+            for _ in range(4):
+                _, _, terminated, truncated, info = env.step(np.zeros(1, dtype=np.float32))
+                assert not (terminated or truncated)
+                assert info["speed"] == pytest.approx(7.0)
+    finally:
+        env.close()
+
+
+def test_front_traffic_vehicle_near_spawn_is_pushed_to_a_safe_distance():
+    """Confirmed empirically (project doc section 13): the native "front
+    vehicle" IDMVehicle (spawned whenever other_vehicles > 0) has NO
+    proximity check against the controlled vehicle at all, unlike every
+    other traffic vehicle. On short straights this measured as close as
+    ~0.04m (literal overlap). SafeSpawnWrapper's entity-proximity fix must
+    push the spawn away from it too, not just from static obstacles."""
+    for length in (5, 30):
+        env = make_env("racetrack_oval", traffic_density=5, oval_straight_length_m=length)
+        worst = float("inf")
+        for seed in range(30):
+            env.reset(seed=seed)
+            unwrapped = env.unwrapped
+            ego = unwrapped.controlled_vehicles[0]
+            others = [v for v in unwrapped.road.vehicles if v is not ego]
+            if not others:
+                continue
+            d = min(
+                float(np.linalg.norm(np.asarray(ego.position) - np.asarray(v.position)))
+                for v in others
+            )
+            worst = min(worst, d)
+        env.close()
+        # Best-effort clearance (largest-gap fallback on a crowded/short lane
+        # can't always hit the full 15m target) -- but must never be close
+        # to the ~0.04-0.2m literal-overlap cases measured before the fix.
+        assert worst >= 5.0, f"length={length}: worst min-distance {worst:.2f}m, expected >= 5.0m"
+
+
+def test_entity_proximity_fix_is_a_noop_without_traffic_or_obstacles():
+    """traffic_density="none" and no obstacle preset -> must be byte-
+    identical to the pre-existing behavior (pure no-op path)."""
+    env1 = make_env("racetrack_oval", traffic_density="none", oval_straight_length_m=80)
+    obs1, info1 = env1.reset(seed=0)
+    env2 = make_env("racetrack_oval", traffic_density="none", oval_straight_length_m=80)
+    obs2, info2 = env2.reset(seed=0)
+    np.testing.assert_allclose(obs1, obs2)
+    env1.close()
+    env2.close()

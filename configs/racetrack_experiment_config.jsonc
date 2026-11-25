@@ -36,16 +36,28 @@
                                 // axis for this project (pendencia em aberto
                                 // -- see project doc); default 3 if unset.
   "oval_obstacle_preset": null, // null | "block_lane" | "force_decision"
+  // Target spawn clearance (meters) from obstacles and other vehicles.
+  // null uses SafeSpawnWrapper's default (15.0). On a short or crowded
+  // lane the wrapper may only be able to reach part of this clearance.
+  "obstacle_min_clearance_m": null,
 
   // --- 3) Acceleration control ---------------------------------------------
-  // Already on by default (RacetrackEnvConfig.action_longitudinal=True);
-  // nothing to set here. (No --action-longitudinal CLI flag exists yet --
-  // add one if this ever needs to be toggled off as an experiment axis.)
+  // On by default (RacetrackEnvConfig.action_longitudinal=True). Set to
+  // false for steering-only control: the car starts at speed_limit and
+  // holds that speed during normal driving with zero acceleration. This
+  // shrinks the action vector and, with the delay wrapper, the observation.
+  // Use the same mode for training and recording.
+  "action_longitudinal": null,
 
   // --- 5) Obstacles --------------------------------------------------------
   // Only the two native oval presets above are supported today. Arbitrary
   // obstacle placement on racetrack-v0/v1/large-v0/v1 is still an open
-  // pendencia (no native key, no wrapper-based solution yet).
+  // pendencia (no native key, no wrapper-based solution yet). See also
+  // obstacle_min_clearance_m above -- the presets' own placement is a
+  // hardcoded offset from the end of the straight, same root bug class as
+  // the spawn fix (section 9 of the project doc): it doesn't scale
+  // meaningfully to a short straight (e.g. length=5 makes both presets a
+  // no-op). The clearance setting adjusts the vehicle's spawn.
 
   // --- 4) Traffic speed (ours; not a native highway-env key) ---------------
   "traffic_speed_min": null,   // null (both null) disables the wrapper -> native spawn speed

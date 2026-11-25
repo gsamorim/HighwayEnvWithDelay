@@ -30,6 +30,23 @@ def add_env_cli_args(parser: argparse.ArgumentParser) -> None:
         "--oval-obstacle-preset", default=None,
         help="native oval obstacle preset (oval env_id only): block_lane | force_decision",
     )
+    parser.add_argument(
+        "--obstacle-min-clearance-m", type=float, default=None,
+        help="target clearance (meters) at spawn from obstacles and other vehicles; "
+             "defaults to 15.0 and is best-effort on short or crowded lanes",
+    )
+    longitudinal = parser.add_mutually_exclusive_group()
+    longitudinal.add_argument(
+        "--action-longitudinal", dest="action_longitudinal", action="store_true", default=None,
+        help="agent controls acceleration (enabled by default)",
+    )
+    longitudinal.add_argument(
+        "--no-action-longitudinal", dest="action_longitudinal", action="store_false",
+        help="agent controls only steering; the car starts at speed_limit and applies "
+             "zero acceleration during normal driving. Changes the action and, when "
+             "delay is enabled, observation dimensions. Use the same mode for "
+             "training and recording.",
+    )
     parser.add_argument("--traffic-speed-min", type=float, default=None)
     parser.add_argument("--traffic-speed-max", type=float, default=None)
     parser.add_argument(
@@ -63,6 +80,10 @@ def env_kwargs_from_args(args: argparse.Namespace, *, delay_seed=None) -> dict:
         kwargs["oval_straight_length_m"] = args.oval_straight_length_m
     if getattr(args, "oval_obstacle_preset", None) is not None:
         kwargs["oval_obstacle_preset"] = args.oval_obstacle_preset
+    if getattr(args, "obstacle_min_clearance_m", None) is not None:
+        kwargs["obstacle_min_clearance_m"] = args.obstacle_min_clearance_m
+    if getattr(args, "action_longitudinal", None) is not None:
+        kwargs["action_longitudinal"] = args.action_longitudinal
     if getattr(args, "traffic_speed_min", None) is not None or getattr(args, "traffic_speed_max", None) is not None:
         kwargs["traffic_speed_min"] = args.traffic_speed_min
         kwargs["traffic_speed_max"] = args.traffic_speed_max

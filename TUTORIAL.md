@@ -86,6 +86,7 @@ Além dessas quatro linhas de PowerShell, o exemplo lê o [arquivo de configura�
 | `"env_id": "racetrack-oval-v0",` | `"env_id": "racetrack-oval-v1",` | Troca a versão da pista do HighwayEnv. Esta linha fica logo abaixo de `"env": "racetrack_oval",`. |
 | `"oval_straight_length_m": 30,` | `"oval_straight_length_m": 60,` | Troca a reta padrão para 60 m. Para trocar uma reta **neste exemplo**, mude a linha `$retas = @("80", "30", "5")` no PowerShell, pois os dois comandos passam o comprimento explicitamente. |
 | `"oval_obstacle_preset": null,` | `"oval_obstacle_preset": "force_decision",` | Coloca obstáculos nas laterais do oval padrão. Já `"block_lane"` coloca obstáculos na faixa central. `null` desativa esses cenários. |
+| `"obstacle_min_clearance_m": null,` | `"obstacle_min_clearance_m": 20.0,` | Pede 20 m de folga na largada em relação a obstáculos e outros veículos. `null` usa 15 m. A opção `--obstacle-min-clearance-m 20` tem o mesmo efeito. |
 | `"traffic": "medium",` | `"traffic": "heavy",` | Aumenta a densidade de tráfego. `none`, `light`, `medium`, `heavy` e `jam` correspondem a limites de 0, 2, 5, 10 e 16 veículos. A quantidade efetiva pode variar a cada episódio. |
 | `"traffic_speed_min": null,` | `"traffic_speed_min": 6.0,` | Define a menor velocidade inicial sorteada, em m/s. Preencha também a linha do máximo. |
 | `"traffic_speed_max": null,` | `"traffic_speed_max": 9.0,` | Define a maior velocidade inicial sorteada, em m/s. Com as duas linhas em `null`, o tráfego usa a velocidade inicial nativa. |
@@ -94,7 +95,17 @@ Para testar outra versão do oval com obstáculos, faça as duas substituições
 
 Para reproduzir o treino do tutorial, mantenha `"oval_obstacle_preset": null,`. Nos testes com `"block_lane"` e reta de 80 m, a observação inicial continha valores inválidos (`NaN`) para o SAC.
 
-O `SafeSpawnWrapper` corrige a posição inicial do carro do agente quando o HighwayEnv o coloca fora da faixa. A correção permite usar as retas de 5 m e 30 m. Com tráfego, ainda pode haver colisão logo após a largada.
+O `SafeSpawnWrapper` corrige largadas fora da faixa e procura uma posição afastada de obstáculos e outros carros. Em uma reta curta ou cheia, a folga pedida pode não caber. O wrapper procura um espaço na própria faixa, e a folga é avaliada no instante da largada.
+
+### Controle da aceleração
+
+| Linha atual no JSONC | Exemplo de substituição | O que muda |
+| --- | --- | --- |
+| `"action_longitudinal": null,` | `"action_longitudinal": false,` | Com `null` ou `true`, o SAC controla aceleração e direção. Com `false`, controla apenas a direção e o carro larga e segue a `speed_limit` durante a condução normal (10 m/s neste exemplo). |
+
+Pelo PowerShell, acrescente `--no-action-longitudinal` à linha que começa com `& $python scripts/train.py --config $config --agent sac --seed 0`, antes do acento grave final. Repita a opção na linha que começa com `& $python scripts/record.py --config $config --agent sac`. Use `--action-longitudinal` para ativar a aceleração explicitamente.
+
+Esse ajuste muda a ação de dois valores para um e também muda o tamanho da observação quando o wrapper de atraso está ligado. Treine e grave com a mesma configuração.
 
 ### Atraso de ação e de observação
 

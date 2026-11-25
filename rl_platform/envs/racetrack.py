@@ -108,6 +108,9 @@ class RacetrackEnvConfig:
     oval_straight_length_m: Optional[int] = None   # native `length`; None = native default (~100)
     oval_no_lanes: Optional[int] = None            # native `no_lanes`; None = native default (3)
     oval_obstacle_preset: Optional[str] = None     # None | "block_lane" | "force_decision"
+    # Desired spawn clearance (meters) from obstacles and other vehicles.
+    # None uses SafeSpawnWrapper's default (15.0).
+    obstacle_min_clearance_m: Optional[float] = None
 
     # --- Traffic speed (ours; not a native highway-env key) -----------------
     # Both or neither must be set. None/None disables TrafficSpeedWrapper
@@ -248,15 +251,21 @@ def make_racetrack_env(
             "DelayedActionMDPWrapper concatenates onto an already-flat observation."
         )
 
+    highway_config = config.to_highway_config()
     env = gym.make(
         config.env_id,
         render_mode=render_mode,
-        config=config.to_highway_config(),
+        config=highway_config,
     )
-    # Always first: works around a real HighwayEnv bug where the controlled
-    # vehicle can spawn off-lane on a short oval straight (see wrappers.py
-    # docstring). No-op whenever the native spawn was already valid.
-    env = SafeSpawnWrapper(env)
+    # Correct the starting state before the other wrappers read it.
+    safe_spawn_kwargs = {}
+    if config.obstacle_min_clearance_m is not None:
+        safe_spawn_kwargs["min_obstacle_clearance_m"] = config.obstacle_min_clearance_m
+    action_config = highway_config["action"]
+    if action_config["type"] == "ContinuousAction" and not action_config["longitudinal"]:
+        # The native steering-only action then applies zero acceleration.
+        safe_spawn_kwargs["initial_controlled_speed"] = highway_config["speed_limit"]
+    env = SafeSpawnWrapper(env, **safe_spawn_kwargs)
     if render_mode is not None:
         env = ForceRenderEnabled(env)
     if config.traffic_speed_min is not None or config.traffic_speed_max is not None:

@@ -518,7 +518,83 @@ class SafeSpawnWrapper(gym.Wrapper):
     Only the controlled vehicle(s) are affected by this bug -- IDM/other
     traffic vehicles already sample their longitudinal position from their
     own lane's real `.length`, confirmed unaffected even at `length=5`.
+
+    Also guards against a second, related native issue: the oval's optional
+    obstacle presets (`block_lane`/`force_decision`, native `RacetrackEnvOval`
+    config keys) place `Obstacle` objects at `length - <hardcoded offset>`
+    world coordinates -- also never scaled/validated against the configured
+    `length`. Confirmed empirically across the 3 straight-length variations
+    used in this project (5/30/80 m):
+
+    - `length=5`: every obstacle lands off any lane entirely (pure no-op --
+      not dangerous, just silently doesn't add the intended challenge).
+    - `length=30`: `block_lane` obstacles land on-lane but on the *curve*
+      leading into the straight (not "mid-straight", as designed);
+      `force_decision` is a no-op (off-lane).
+    - `length=80`: `block_lane` obstacles land squarely inside the native
+      hardcoded controlled-vehicle spawn range (20-50 m) -- i.e. the car can
+      spawn essentially on top of, or a few meters from, an obstacle, with
+      no chance to react. Measured as close as ~4.7 m at spawn in one seed.
+      This is a genuine, confirmed unfairness: an episode-ending collision
+      completely unrelated to policy quality.
+
+    And a THIRD, even worse variant of the same root bug: the dedicated
+    "front vehicle" that `_make_vehicles` spawns whenever `other_vehicles >
+    0` (`IDMVehicle.make_on_lane(road, ("b","c", <same lane as controlled>),
+    longitudinal=uniform(0, lane("b","c").length), ...)`) has NO proximity
+    check against the controlled vehicle at all -- unlike every *other*
+    traffic vehicle spawned after it, which the native code does check
+    (`for v in road.vehicles: if dist < 20.0: break`, native comment
+    "Prevent early collisions"). On a long straight this "front vehicle" is
+    always far enough ahead (node "b" is ~100m+ away) for that gap to not
+    matter in practice. On the short straights this project uses, it does:
+    confirmed empirically (40-60 seeds per combination) with the full wrapper
+    stack already applied (including the two fixes above):
+
+    - `length=5`: min distance as low as **0.04 m** (literal overlap) across
+      multiple seeds, independent of `other_vehicles` count (only need
+      `other_vehicles > 0` to trigger the dedicated front-vehicle spawn).
+    - `length=30`: min distance as low as **0.18 m**, in up to ~20% of seeds
+      under 5 m.
+    - `length=80`: safe (min ~20-38 m) -- the controlled-vehicle spawn range
+      (20-50 m on "a"-"b") stays far from node "b" (at 81 m), where the
+      front vehicle spawns.
+
+    This wrapper closes all three gaps the same way: after `reset()`, if any
+    controlled vehicle starts within `min_obstacle_clearance_m` of any
+    `road.objects` obstacle OR any other vehicle in `road.vehicles`
+    (traffic, or another controlled vehicle), it resamples a longitudinal
+    position on the SAME lane that clears every such entity by that margin
+    (rejection sampling, falling back to a position chosen from the largest
+    projected gap if no candidate clears in 50 tries). The default
+    clearance (15 m) is a reaction-distance heuristic (stopping distance
+    from `speed_limit=10 m/s` at `|acceleration| <= 5 m/s^2` is ~10 m, plus a
+    couple of policy steps' margin at `policy_frequency=5`), not a hard
+    physical limit -- pass `min_obstacle_clearance_m=` to tune it. Traffic
+    vehicles keep moving after reset (unlike static obstacles). The margin
+    is a best-effort target at reset and may be impossible on short or
+    crowded lanes.
+
+    None of this makes the obstacle presets scale meaningfully to short
+    straights (e.g. `length=5` still can't fit `block_lane`'s 4 obstacles in
+    any way that resembles the native design). This wrapper only adjusts
+    the starting state.
+
+    If `initial_controlled_speed` is set, initialize controlled vehicles at
+    that speed. Steering-only kinematic actions apply zero acceleration,
+    so the vehicle maintains it during normal driving and the simulator
+    retains its native collision dynamics.
     """
+
+    def __init__(
+        self,
+        env: gym.Env,
+        min_obstacle_clearance_m: float = 15.0,
+        initial_controlled_speed: float | None = None,
+    ):
+        super().__init__(env)
+        self.min_obstacle_clearance_m = min_obstacle_clearance_m
+        self.initial_controlled_speed = initial_controlled_speed
 
     def _fix_offlane_controlled_vehicles(self) -> bool:
         unwrapped = self.unwrapped
@@ -538,10 +614,95 @@ class SafeSpawnWrapper(gym.Wrapper):
             fixed_any = True
         return fixed_any
 
+    def _fix_unsafe_entity_proximity(self) -> bool:
+        """Covers obstacles (seção 12 do project doc) AND other vehicles,
+        in particular the native "front vehicle" that -- unlike every other
+        traffic vehicle -- is spawned with no proximity check at all
+        against the controlled vehicle."""
+        unwrapped = self.unwrapped
+        road = getattr(unwrapped, "road", None)
+        if road is None:
+            return False
+        controlled = list(getattr(unwrapped, "controlled_vehicles", []))
+        fixed_any = False
+        for vehicle in controlled:
+            objects = getattr(road, "objects", None) or []
+            other_vehicles = [v for v in getattr(road, "vehicles", []) if v is not vehicle]
+            nearby_positions = [np.asarray(o.position, dtype=float) for o in objects] + [
+                np.asarray(v.position, dtype=float) for v in other_vehicles
+            ]
+            if not nearby_positions:
+                continue
+            vehicle_pos = np.asarray(vehicle.position, dtype=float)
+            nearest = min(float(np.linalg.norm(vehicle_pos - p)) for p in nearby_positions)
+            if nearest >= self.min_obstacle_clearance_m:
+                continue
+            lane = road.network.get_lane(vehicle.lane_index)
+            margin = 0.5
+            safe_high = max(lane.length - margin, margin)
+            placed = False
+            for _ in range(50):
+                longitudinal = float(road.np_random.uniform(margin, safe_high))
+                candidate_pos = np.asarray(lane.position(longitudinal, 0), dtype=float)
+                if all(
+                    float(np.linalg.norm(candidate_pos - p)) >= self.min_obstacle_clearance_m
+                    for p in nearby_positions
+                ):
+                    vehicle.position = lane.position(longitudinal, 0)
+                    vehicle.heading = lane.heading_at(longitudinal)
+                    placed = True
+                    break
+            if not placed:
+                # 50 random tries all landed too close to *something* --
+                # typically means the lane itself is short relative to
+                # `min_obstacle_clearance_m` and/or crowded (e.g. a traffic
+                # vehicle uniformly spawned anywhere on a ~30m turn lane, so
+                # unlike the two obstacle presets it isn't reliably biased
+                # toward the segment's end -- "use the start" would just
+                # trade one unsafe spot for another). Fall back to the
+                # longitudinal position that maximizes the minimum distance
+                # to every nearby entity: project each onto this lane and
+                # place the vehicle in the middle of the largest resulting
+                # gap. Best-effort -- if the lane is simply too short/
+                # crowded to clear everything, this is the closest we can
+                # get, not a hard guarantee.
+                longitudinal = self._largest_gap_longitudinal(lane, nearby_positions, margin, safe_high)
+                vehicle.position = lane.position(longitudinal, 0)
+                vehicle.heading = lane.heading_at(longitudinal)
+            fixed_any = True
+        return fixed_any
+
+    @staticmethod
+    def _largest_gap_longitudinal(lane, nearby_positions, margin, safe_high) -> float:
+        projected = [margin, safe_high]
+        for p in nearby_positions:
+            try:
+                s, _lateral = lane.local_coordinates(p)
+            except Exception:
+                continue
+            if margin <= s <= safe_high:
+                projected.append(float(s))
+        projected.sort()
+        best_mid, best_gap = margin, -1.0
+        for a, b in zip(projected[:-1], projected[1:]):
+            gap = b - a
+            if gap > best_gap:
+                best_gap = gap
+                best_mid = (a + b) / 2.0
+        return best_mid
+
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        if self._fix_offlane_controlled_vehicles():
-            unwrapped = self.unwrapped
+        changed_spawn = self._fix_offlane_controlled_vehicles()
+        changed_proximity = self._fix_unsafe_entity_proximity()
+        unwrapped = self.unwrapped
+        changed_speed = False
+        if self.initial_controlled_speed is not None:
+            for vehicle in unwrapped.controlled_vehicles:
+                if vehicle.speed != self.initial_controlled_speed:
+                    vehicle.speed = self.initial_controlled_speed
+                    changed_speed = True
+        if changed_spawn or changed_proximity or changed_speed:
             obs = unwrapped.observation_type.observe()
             info = unwrapped._info(obs, action=unwrapped.action_space.sample())
         return obs, info
