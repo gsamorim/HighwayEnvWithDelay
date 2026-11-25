@@ -1,6 +1,14 @@
 from .registry import make_env, register_env, available_envs
-from .racetrack import RacetrackEnvConfig, make_racetrack_env, TRAFFIC_PRESETS
-from .wrappers import FlattenObservation, RewardScaler, ForceRenderEnabled
+from .racetrack import RacetrackEnvConfig, make_racetrack_env, make_racetrack_oval_env, TRAFFIC_PRESETS
+from .wrappers import (
+    FlattenObservation,
+    RewardScaler,
+    ForceRenderEnabled,
+    HighSpeedRewardWrapper,
+    TrafficSpeedWrapper,
+    DelayedActionMDPWrapper,
+    MAX_DELAY_STEPS,
+)
 
 __all__ = [
     "make_env",
@@ -8,8 +16,13 @@ __all__ = [
     "available_envs",
     "RacetrackEnvConfig",
     "make_racetrack_env",
+    "make_racetrack_oval_env",
     "TRAFFIC_PRESETS",
     "FlattenObservation",
     "RewardScaler",
     "ForceRenderEnabled",
+    "HighSpeedRewardWrapper",
+    "TrafficSpeedWrapper",
+    "DelayedActionMDPWrapper",
+    "MAX_DELAY_STEPS",
 ]

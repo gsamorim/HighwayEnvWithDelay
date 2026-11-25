@@ -1,10 +1,13 @@
-"""Factory + config presets for HighwayEnv's `racetrack-v0`.
+"""Factory + config presets for HighwayEnv's racetrack family.
 
-`racetrack-v0` is a closed-loop track with an ego vehicle and a configurable
-number of IDM-driven traffic vehicles. The two continuous control variables
-are acceleration (longitudinal) and steering (lateral); by default HighwayEnv
-only exposes steering (with a discrete target-speed controller for the
-throttle), so we explicitly enable both here per the project brief.
+`racetrack-v0`/`racetrack-v1` is a closed-loop track, and
+`racetrack-oval-v0`/`racetrack-oval-v1` is an oval variant with a
+configurable straight-segment length and two optional obstacle presets; both
+use an ego vehicle and a configurable number of IDM-driven traffic vehicles.
+The two continuous control variables are acceleration (longitudinal) and
+steering (lateral); by default HighwayEnv only exposes steering (with a
+discrete target-speed controller for the throttle), so we explicitly enable
+both here per the project brief.
 
 The most interesting *environment* knob for this project is traffic density,
 controlled by HighwayEnv's `other_vehicles` config key (an upper bound on the
@@ -12,6 +15,10 @@ number of randomly spawned IDM vehicles per episode -- see
 `highway_env.envs.racetrack_env.RacetrackEnv._make_vehicles`). We expose this
 as a first-class `traffic_density` parameter so experiments can sweep it
 without knowing the underlying HighwayEnv config key.
+
+Everything in this module composes on top of the native HighwayEnv classes
+(`RacetrackEnv`/`RacetrackEnvOval`) via their own `config=` dict and via
+`gym.Wrapper`s in `wrappers.py` -- no native class is subclassed or patched.
 """
 from __future__ import annotations
 
@@ -21,7 +28,14 @@ from typing import Any, Optional
 import gymnasium as gym
 import highway_env  # noqa: F401  (registers the highway-env gym environments)
 
-from .wrappers import FlattenObservation, RewardScaler, ForceRenderEnabled, HighSpeedRewardWrapper
+from .wrappers import (
+    FlattenObservation,
+    RewardScaler,
+    ForceRenderEnabled,
+    HighSpeedRewardWrapper,
+    TrafficSpeedWrapper,
+    DelayedActionMDPWrapper,
+)
 
 # Named traffic presets -> number of other (IDM-controlled) vehicles.
 # `other_vehicles` is an *upper bound*: HighwayEnv samples a random integer
@@ -35,6 +49,19 @@ TRAFFIC_PRESETS: dict[str, int] = {
     "jam": 16,
 }
 
+# Native gym ids this factory is known to work with. Not enforced (HighwayEnv
+# may register more over time), just documents what's been exercised.
+KNOWN_ENV_IDS = (
+    "racetrack-v0",
+    "racetrack-v1",
+    "racetrack-large-v0",
+    "racetrack-large-v1",
+    "racetrack-oval-v0",
+    "racetrack-oval-v1",
+)
+
+_OVAL_OBSTACLE_PRESETS = ("block_lane", "force_decision")
+
 
 @dataclass
 class RacetrackEnvConfig:
@@ -44,13 +71,14 @@ class RacetrackEnvConfig:
     is merged on top (and wins) over everything computed below.
     """
 
-    traffic_density: str | int = "medium"      # preset name or explicit other_vehicles count
+    env_id: str = "racetrack-v0"                 # native gym id (see KNOWN_ENV_IDS)
+    traffic_density: str | int = "medium"        # preset name or explicit other_vehicles count
     controlled_vehicles: int = 1
-    duration: int = 60                          # seconds of simulated episode time
-    observation_type: str = "Kinematics"        # "Kinematics" (vector) or "OccupancyGrid" (image)
-    vehicles_count_observed: int = 6            # nearby vehicles included in Kinematics obs
-    action_longitudinal: bool = True            # enable acceleration control
-    action_lateral: bool = True                 # enable steering control
+    duration: int = 60                           # seconds of simulated episode time
+    observation_type: str = "Kinematics"         # "Kinematics" (vector) or "OccupancyGrid" (image)
+    vehicles_count_observed: int = 6             # nearby vehicles included in Kinematics obs
+    action_longitudinal: bool = True             # enable acceleration control
+    action_lateral: bool = True                  # enable steering control
     simulation_frequency: int = 15
     policy_frequency: int = 5
     speed_limit: float = 10.0
@@ -64,6 +92,29 @@ class RacetrackEnvConfig:
     # a reward wrapper applied on top of the env -- see wrappers.py.
     high_speed_reward: float = 0.4
     reward_scale: float = 1.0
+
+    # --- Oval track variant (racetrack-oval-* only) -------------------------
+    # Native `RacetrackEnvOval` config keys. Setting any of these when
+    # `env_id` is not an oval variant is a config error (raised below, not
+    # silently ignored), since they have no effect on racetrack-v0/v1/large.
+    oval_straight_length_m: Optional[int] = None   # native `length`; None = native default (~100)
+    oval_no_lanes: Optional[int] = None            # native `no_lanes`; None = native default (3)
+    oval_obstacle_preset: Optional[str] = None     # None | "block_lane" | "force_decision"
+
+    # --- Traffic speed (ours; not a native highway-env key) -----------------
+    # Both or neither must be set. None/None disables TrafficSpeedWrapper
+    # entirely (traffic keeps the track's native spawn speed).
+    traffic_speed_min: Optional[float] = None
+    traffic_speed_max: Optional[float] = None
+
+    # --- Delay / RDMDP-style augmented state (ours) -------------------------
+    enable_delay_wrapper: bool = False     # False = baseline, no extra obs dims at all
+    action_delay_min_steps: int = 0
+    action_delay_max_steps: int = 0
+    delay_known_to_agent: bool = False
+    observation_delay_steps: int = 0       # simple FIFO delay, no reordering (see wrappers.py)
+    delay_seed: Optional[int] = None
+
     extra_config: dict[str, Any] = field(default_factory=dict)
 
     def resolve_traffic(self) -> int:
@@ -76,6 +127,9 @@ class RacetrackEnvConfig:
                     f"Choose one of {list(TRAFFIC_PRESETS)} or pass an int."
                 ) from exc
         return int(self.traffic_density)
+
+    def _is_oval(self) -> bool:
+        return "oval" in self.env_id
 
     def to_highway_config(self) -> dict[str, Any]:
         obs_cfg: dict[str, Any]
@@ -122,6 +176,31 @@ class RacetrackEnvConfig:
             "terminate_off_road": True,
             "offscreen_rendering": True,
         }
+
+        oval_fields_set = (
+            self.oval_straight_length_m is not None
+            or self.oval_no_lanes is not None
+            or self.oval_obstacle_preset is not None
+        )
+        if self._is_oval():
+            if self.oval_straight_length_m is not None:
+                cfg["length"] = self.oval_straight_length_m
+            if self.oval_no_lanes is not None:
+                cfg["no_lanes"] = self.oval_no_lanes
+            if self.oval_obstacle_preset is not None:
+                if self.oval_obstacle_preset not in _OVAL_OBSTACLE_PRESETS:
+                    raise ValueError(
+                        f"Unknown oval_obstacle_preset '{self.oval_obstacle_preset}'. "
+                        f"Choose one of {_OVAL_OBSTACLE_PRESETS} or None."
+                    )
+                cfg[self.oval_obstacle_preset] = True
+        elif oval_fields_set:
+            raise ValueError(
+                f"oval_straight_length_m/oval_no_lanes/oval_obstacle_preset require an "
+                f"oval env_id (got '{self.env_id}'); these are native RacetrackEnvOval "
+                f"config keys with no effect on non-oval environments."
+            )
+
         # extra_config always wins (deep-ish merge for the one level we care about)
         for k, v in self.extra_config.items():
             if isinstance(v, dict) and isinstance(cfg.get(k), dict):
@@ -137,7 +216,7 @@ def make_racetrack_env(
     flatten_obs: bool = True,
     **overrides: Any,
 ) -> gym.Env:
-    """Build a ready-to-use `racetrack-v0` Gymnasium environment.
+    """Build a ready-to-use racetrack Gymnasium environment.
 
     Parameters
     ----------
@@ -146,24 +225,64 @@ def make_racetrack_env(
         real display -- see `rl_platform.visualization`).
     flatten_obs: wrap the observation into a flat vector (needed by the
         MLP-based SAC agent shipped in this repo). Set False if you plan to
-        feed a CNN a raw OccupancyGrid/image observation.
+        feed a CNN a raw OccupancyGrid/image observation. Must be True if
+        `config.enable_delay_wrapper` is True (the delay wrapper requires an
+        already-flat 1D observation to concatenate onto).
     overrides: convenience kwargs forwarded to `RacetrackEnvConfig` when
         `config` is not given, e.g. `make_racetrack_env(traffic_density="heavy")`.
     """
     if config is None:
         config = RacetrackEnvConfig(**overrides)
 
+    if config.enable_delay_wrapper and not flatten_obs:
+        raise ValueError(
+            "enable_delay_wrapper=True requires flatten_obs=True: "
+            "DelayedActionMDPWrapper concatenates onto an already-flat observation."
+        )
+
     env = gym.make(
-        "racetrack-v0",
+        config.env_id,
         render_mode=render_mode,
         config=config.to_highway_config(),
     )
     if render_mode is not None:
         env = ForceRenderEnabled(env)
+    if config.traffic_speed_min is not None or config.traffic_speed_max is not None:
+        if config.traffic_speed_min is None or config.traffic_speed_max is None:
+            raise ValueError("traffic_speed_min and traffic_speed_max must be set together (or both left None).")
+        env = TrafficSpeedWrapper(env, speed_min=config.traffic_speed_min, speed_max=config.traffic_speed_max)
     if config.high_speed_reward != 0.0:
         env = HighSpeedRewardWrapper(env, coef=config.high_speed_reward, speed_limit=config.speed_limit)
     if config.reward_scale != 1.0:
         env = RewardScaler(env, scale=config.reward_scale)
     if flatten_obs:
         env = FlattenObservation(env)
+    if config.enable_delay_wrapper:
+        env = DelayedActionMDPWrapper(
+            env,
+            min_delay_steps=config.action_delay_min_steps,
+            max_delay_steps=config.action_delay_max_steps,
+            delay_known_to_agent=config.delay_known_to_agent,
+            obs_delay_steps=config.observation_delay_steps,
+            seed=config.delay_seed,
+        )
     return env
+
+
+def make_racetrack_oval_env(
+    config: Optional[RacetrackEnvConfig] = None,
+    render_mode: Optional[str] = None,
+    flatten_obs: bool = True,
+    **overrides: Any,
+) -> gym.Env:
+    """Same as `make_racetrack_env`, defaulting `env_id` to the oval track
+    variant (`racetrack-oval-v0`) when `config` is not given. Registered
+    separately as `"racetrack_oval"` purely as a convenience default --
+    every oval knob is fully reachable (and overridable) through
+    `make_racetrack_env`/`RacetrackEnvConfig` directly, e.g. pass
+    `env_id="racetrack-oval-v1"` to either factory.
+    """
+    if config is None:
+        overrides.setdefault("env_id", "racetrack-oval-v0")
+        config = RacetrackEnvConfig(**overrides)
+    return make_racetrack_env(config=config, render_mode=render_mode, flatten_obs=flatten_obs)

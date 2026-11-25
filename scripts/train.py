@@ -4,6 +4,10 @@
 Example:
     python scripts/train.py --env racetrack --agent sac --traffic medium \
         --total-steps 50000 --run-name sac_medium
+
+Or drive it from the unified experiment config (any flag below still
+overrides the file):
+    python scripts/train.py --config configs/racetrack_experiment_config.jsonc
 """
 from __future__ import annotations
 
@@ -17,6 +21,8 @@ from rl_platform.envs import make_env, available_envs
 from rl_platform.agents import make_agent, available_agents
 from rl_platform.training import Trainer, TrainerConfig
 from rl_platform.training.plotting import plot_training_curves
+from rl_platform.config_loader import load_jsonc, experiment_config_to_arg_defaults
+from rl_platform.cli_common import add_env_cli_args, env_kwargs_from_args, traffic_arg
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -43,29 +49,40 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--high-speed-reward", type=float, default=0.4, help="coefficient for the speed-bonus reward wrapper")
     p.add_argument("--collision-reward", type=float, default=-5.0)
     p.add_argument("--action-reward", type=float, default=-0.1)
+
+    add_env_cli_args(p)
     return p
 
 
-def _traffic_arg(v: str):
-    try:
-        return int(v)
-    except ValueError:
-        return v
-
-
 def main(argv=None):
-    args = build_arg_parser().parse_args(argv)
+    # A lightweight pre-parse just for --config, so its values can be
+    # installed as argparse *defaults* before the real parse -- any flag
+    # also given explicitly on the command line still wins (argparse
+    # precedence: explicit CLI args override set_defaults()).
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", default=None,
+                      help="path to a .jsonc experiment config (configs/*.jsonc); "
+                           "CLI flags always override its values")
+    pre_args, remaining = pre.parse_known_args(argv)
+
+    parser = build_arg_parser()
+    if pre_args.config:
+        cfg = load_jsonc(pre_args.config)
+        parser.set_defaults(**experiment_config_to_arg_defaults(cfg))
+    args = parser.parse_args(remaining)
+
     run_name = args.run_name or f"{args.agent}_{args.env}_traffic-{args.traffic}_seed{args.seed}"
 
     def env_factory():
-        return make_env(
-            args.env,
-            traffic_density=_traffic_arg(args.traffic),
+        kwargs = dict(
+            traffic_density=traffic_arg(args.traffic),
             render_mode="rgb_array",
             high_speed_reward=args.high_speed_reward,
             collision_reward=args.collision_reward,
             action_reward=args.action_reward,
         )
+        kwargs.update(env_kwargs_from_args(args, delay_seed=args.seed))
+        return make_env(args.env, **kwargs)
 
     probe_env = env_factory()
     obs_dim = probe_env.observation_space.shape[0]

@@ -9,6 +9,17 @@ live window. Example:
     SDL_VIDEODRIVER=dummy python scripts/record.py \
         --checkpoint results/checkpoints/sac_racetrack_traffic-medium_seed0_final.pt \
         --traffic heavy --episodes 2 --out results/videos/sac_heavy.mp4
+
+IMPORTANT: if the checkpoint was trained with non-default env knobs that
+change the observation size -- right now that's only --enable-delay-wrapper
+-- this script must be given the SAME ones, or the checkpoint won't load (its
+network input size won't match). The simplest way to guarantee that is to
+record with the exact same --config file used for training:
+
+    SDL_VIDEODRIVER=dummy python scripts/record.py \
+        --config configs/racetrack_experiment_config.jsonc \
+        --checkpoint results/checkpoints/<run_name>_final.pt \
+        --out results/videos/best_run.mp4
 """
 from __future__ import annotations
 
@@ -19,9 +30,11 @@ import sys
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from rl_platform.envs import make_env
+from rl_platform.envs import make_env, available_envs
 from rl_platform.agents import make_agent
 from rl_platform.visualization import overlay_hud, save_video, save_gif
+from rl_platform.config_loader import load_jsonc, experiment_config_to_arg_defaults
+from rl_platform.cli_common import add_env_cli_args, env_kwargs_from_args, traffic_arg
 
 
 def record_episode_with_hud(env, act_fn, seed, agent_label, traffic_label, ep_idx, n_episodes):
@@ -61,8 +74,9 @@ def record_episode_with_hud(env, act_fn, seed, agent_label, traffic_label, ep_id
     return frames, summary
 
 
-def main(argv=None):
+def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--env", default="racetrack", choices=available_envs())
     p.add_argument("--checkpoint", default=None)
     p.add_argument("--agent", default="sac")
     p.add_argument("--traffic", default="medium")
@@ -71,14 +85,30 @@ def main(argv=None):
     p.add_argument("--fps", type=int, default=15)
     p.add_argument("--out", default="results/videos/rollout.mp4")
     p.add_argument("--gif", action="store_true", help="also save a .gif next to --out")
-    args = p.parse_args(argv)
+    add_env_cli_args(p)
+    return p
 
-    try:
-        traffic = int(args.traffic)
-    except ValueError:
-        traffic = args.traffic
 
-    env = make_env("racetrack", traffic_density=traffic, render_mode="rgb_array")
+def main(argv=None):
+    # Same --config pre-parse pattern as scripts/train.py, so recording can
+    # reuse the exact config a run was trained with (see module docstring).
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", default=None)
+    pre_args, remaining = pre.parse_known_args(argv)
+
+    parser = build_arg_parser()
+    if pre_args.config:
+        cfg = load_jsonc(pre_args.config)
+        parser.set_defaults(**experiment_config_to_arg_defaults(cfg))
+    args = parser.parse_args(remaining)
+
+    env_kwargs = dict(
+        traffic_density=traffic_arg(args.traffic),
+        render_mode="rgb_array",
+    )
+    env_kwargs.update(env_kwargs_from_args(args, delay_seed=args.seed))
+
+    env = make_env(args.env, **env_kwargs)
     obs_dim = env.observation_space.shape[0]
     act_dim = env.action_space.shape[0]
     agent = make_agent(args.agent, obs_dim=obs_dim, act_dim=act_dim)

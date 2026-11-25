@@ -22,7 +22,7 @@ from typing import Any, Callable, Optional
 
 import gymnasium as gym
 
-from .racetrack import make_racetrack_env
+from .racetrack import make_racetrack_env, make_racetrack_oval_env
 
 EnvFactory = Callable[..., gym.Env]
 
@@ -49,3 +49,6 @@ def make_env(name: str, **kwargs: Any) -> gym.Env:
 
 # --- built-in registrations -------------------------------------------------
 register_env("racetrack", make_racetrack_env)
+# Convenience default (env_id="racetrack-oval-v0"); every oval knob is also
+# reachable through "racetrack" + env_id="racetrack-oval-v0"/"racetrack-oval-v1".
+register_env("racetrack_oval", make_racetrack_oval_env)

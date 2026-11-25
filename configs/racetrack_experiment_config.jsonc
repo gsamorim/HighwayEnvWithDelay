@@ -1,0 +1,79 @@
+{
+  // =========================================================================
+  // Unified experiment config -- HighwayEnv Racetrack + SAC.
+  //
+  // Keys here mirror scripts/train.py's CLI flags 1:1 (dashes -> underscores,
+  // e.g. --oval-straight-length-m -> "oval_straight_length_m"). Any key can
+  // be left out or set to null (falls back to train.py's own default), and
+  // any flag passed explicitly on the command line always overrides this
+  // file:
+  //   python scripts/train.py --config configs/racetrack_experiment_config.jsonc
+  //   python scripts/train.py --config configs/racetrack_experiment_config.jsonc --seed 1
+  //
+  // Comments mark which knobs are NOT valid for a given env_id -- those are
+  // also enforced at runtime (RacetrackEnvConfig raises ValueError), not
+  // just documented here.
+  // =========================================================================
+
+  // --- Run bookkeeping ----------------------------------------------------
+  "seed": 0,
+  "total_steps": 50000,
+  "eval_episodes": 5,          // periodic eval during training (rl-baselines3-zoo default: 5-10)
+  "run_name": null,            // null = auto-generated from env/agent/traffic/seed
+
+  // --- 6) Environment switch ----------------------------------------------
+  "env": "racetrack_oval",     // "racetrack" | "racetrack_oval" (registry.py)
+  "env_id": "racetrack-oval-v0",
+  // other env_id values seen in highway-env: racetrack-v0, racetrack-v1,
+  // racetrack-large-v0, racetrack-large-v1, racetrack-oval-v1
+
+  // --- 2) Oval track variant (racetrack-oval-* only) ----------------------
+  // Chosen straight-length variants for this project: 80, 30, 5 m (+ the
+  // ~100m native default as an implicit 4th/baseline variant, obtained by
+  // leaving oval_straight_length_m null on a non-oval or default-length run).
+  "oval_straight_length_m": 30,
+  // "oval_no_lanes": null,    // native `no_lanes`; NOT yet an experiment
+                                // axis for this project (pendencia em aberto
+                                // -- see project doc); default 3 if unset.
+  "oval_obstacle_preset": null, // null | "block_lane" | "force_decision"
+
+  // --- 3) Acceleration control ---------------------------------------------
+  // Already on by default (RacetrackEnvConfig.action_longitudinal=True);
+  // nothing to set here. (No --action-longitudinal CLI flag exists yet --
+  // add one if this ever needs to be toggled off as an experiment axis.)
+
+  // --- 5) Obstacles --------------------------------------------------------
+  // Only the two native oval presets above are supported today. Arbitrary
+  // obstacle placement on racetrack-v0/v1/large-v0/v1 is still an open
+  // pendencia (no native key, no wrapper-based solution yet).
+
+  // --- 4) Traffic speed (ours; not a native highway-env key) ---------------
+  "traffic_speed_min": null,   // null (both null) disables the wrapper -> native spawn speed
+  "traffic_speed_max": null,   // must be set together with traffic_speed_min
+
+  // --- 6) Traffic intensity (native `other_vehicles`, via named presets) ---
+  "traffic": "medium",         // "none" | "light" | "medium" | "heavy" | "jam", or an int
+
+  // --- 1) Delay / RDMDP-style augmented state (ours) -----------------------
+  "enable_delay_wrapper": true,   // false = baseline, zero extra obs dims
+  "action_delay_min_steps": 0,
+  "action_delay_max_steps": 3,    // TRAIN with 0-3; see eval override note below
+  "delay_known_to_agent": true,
+  "observation_delay_steps": 0,   // simple FIFO delay, no reordering (pendencia)
+
+  // --- Benchmark protocol (reference only -- scripts/train.py ignores any
+  //      key starting with "_"; kept here so the answer to "how many
+  //      seeds/episodes is standard" travels with the experiment grid) -----
+  "_benchmark_protocol_reference": {
+    "seeds_per_config": "5-10 independent seeds (Henderson et al. 2018; Colas et al. 2018, 'How Many Random Seeds?')",
+    "periodic_eval_episodes_during_training": "5-10 (rl-baselines3-zoo default)",
+    "final_eval_episodes": "~100 (rliable / Agarwal et al. 2021 convention)",
+    "report_with": "IQM + bootstrap CI across seeds (rliable), not single-seed curves"
+  }
+
+  // --- Suggested evaluation override (apply on the CLI, not auto-applied --
+  //      this config trains with a NARROWER delay range than it evaluates,
+  //      per the project's generalization test):
+  // python scripts/train.py --config configs/racetrack_experiment_config.jsonc \
+  //     --action-delay-max-steps 6 --eval-episodes 100
+}
