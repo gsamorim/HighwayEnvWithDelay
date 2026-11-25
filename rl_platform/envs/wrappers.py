@@ -216,8 +216,13 @@ class DelayedActionMDPWrapper(gym.Wrapper):
     R1. Ao enviar uma acao no passo `send_step`, sorteia-se um atraso em
         `[min_delay_steps, max_delay_steps]` e fixa-se `apply_step =
         send_step + atraso` no momento do envio (nao e re-sorteado depois).
-    R2. Comandos pendentes (`_in_flight`) sao conceitualmente ordenados por
-        `apply_step` crescente (ordenacao aplicada ao montar `pending_queue`).
+    R2. Quando `delay_known_to_agent=True`, `pending_queue` e ordenado por
+        `apply_step` crescente (ordem de aplicacao -- informacao legitima,
+        ja que o tempo restante tambem e revelado). Quando
+        `delay_known_to_agent=False`, `pending_queue` e ordenado por
+        `send_step` (ordem de despacho, que o agente ja conhece por si so)
+        -- NUNCA por `apply_step` nesse modo, pois isso vazaria a ordem
+        relativa dos atrasos mesmo com `pending_remaining_time` zerado.
     R3. A cada `step()`, resolvem-se todos os comandos "devidos"
         (`apply_step <= current_step`).
     R4. Em caso de mais de um devido no mesmo passo (reordenacao), vence o
@@ -234,6 +239,18 @@ class DelayedActionMDPWrapper(gym.Wrapper):
     R7. `action_history` (acoes enviadas, mais recentes) e independente de
         `pending_queue` (comandos ainda nao aplicados) -- a primeira e
         sempre preenchida a cada passo, mesmo quando o atraso sorteado e 0.
+
+    Reset e reprodutibilidade do RNG de atraso
+    -------------------------------------------
+    `env.reset(seed=s)` reinicializa o fluxo de sorteios de atraso a partir
+    de `s` (via `SeedSequence(s).spawn(1)`) sempre que o wrapper NAO recebeu
+    seed propria no construtor -- assim uma avaliacao com `--seed 41`
+    reproduz tanto o spawn/trafego quanto a sequencia de atrasos sorteados.
+    Um `reset()` sem seed explicita NAO mexe no RNG -- ele da continuidade
+    ao fluxo, para que resets repetidos durante o treino nao repliquem a
+    mesma sequencia de atrasos todo episodio. Se o wrapper foi construido
+    com uma seed propria (`seed=...`), ela manda sempre e `reset(seed=...)`
+    nao a sobrescreve.
     """
 
     def __init__(
@@ -274,6 +291,10 @@ class DelayedActionMDPWrapper(gym.Wrapper):
         # pendencia -- see the project doc.
         self.obs_delay_steps = obs_delay_steps
 
+        # Remember whether an explicit seed was given to the WRAPPER itself
+        # (as opposed to the env's reset(seed=...)) -- see reset() below for
+        # why this distinction matters for reproducibility.
+        self._explicit_seed = seed
         self._rng = np.random.default_rng(seed)
         self._act_dim = int(env.action_space.shape[0])
         action_low = env.action_space.low
@@ -350,7 +371,23 @@ class DelayedActionMDPWrapper(gym.Wrapper):
                 f"capacity {self.capacity}. max_delay_steps ({self.max_delay_steps}) "
                 f"exceeds what the buffer supports."
             )
-        pending_sorted = sorted(self._in_flight, key=lambda c: c["apply_step"])  # R2
+        # R2: internal/known-mode ordering is by (apply_step, send_step) --
+        # i.e. application order, which is meaningful information once the
+        # agent is told the real remaining time. But when the delay is
+        # supposed to be HIDDEN (delay_known_to_agent=False), exposing the
+        # queue in apply-order still leaks the relative delay ranking
+        # through slot position alone (e.g. a shorter-delay command sent
+        # later would appear in an earlier slot than a longer-delay command
+        # sent earlier) even though pending_remaining_time is zeroed out.
+        # Fixed real bug: previously this was unconditionally sorted by
+        # apply_step regardless of delay_known_to_agent. In hidden mode the
+        # visible order must instead be send order (dispatch order), which
+        # the agent already knows on its own (it sent the commands) and so
+        # carries no extra information about the delay distribution.
+        if self.delay_known_to_agent:
+            pending_sorted = sorted(self._in_flight, key=lambda c: (c["apply_step"], c["send_step"]))
+        else:
+            pending_sorted = sorted(self._in_flight, key=lambda c: c["send_step"])
         pending_queue = np.zeros((self.capacity, self._act_dim), dtype=np.float32)
         pending_remaining_time = np.zeros(self.capacity, dtype=np.float32)
         for i, cmd in enumerate(pending_sorted):
@@ -389,6 +426,22 @@ class DelayedActionMDPWrapper(gym.Wrapper):
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
+        # Fixed real bug: the delay RNG used to be fixed once at __init__
+        # and never touched again, so env.reset(seed=s) reproduced the
+        # vehicle spawn/traffic but NOT the sampled delay sequence -- calling
+        # reset(seed=41) twice in the same process gave two DIFFERENT delay
+        # sequences (confirmed empirically). Fix: when reset() is given an
+        # explicit seed AND the wrapper itself was constructed without its
+        # own pinned seed (self._explicit_seed is None, i.e. the caller
+        # didn't ask for an independent delay RNG), re-derive the delay RNG
+        # from that reset seed via SeedSequence.spawn so it's reproducible
+        # per-seed but decorrelated from the env's own RNG stream. A bare
+        # reset() (no seed kwarg) intentionally does NOT touch the RNG --
+        # it continues the existing stream, so repeated resets during
+        # training don't replay identical delay sequences every episode.
+        reset_seed = kwargs.get("seed")
+        if reset_seed is not None and self._explicit_seed is None:
+            self._rng = np.random.default_rng(np.random.SeedSequence(reset_seed).spawn(1)[0])
         self._reset_internal_state()
         for _ in range(self.obs_delay_steps + 1):
             self._obs_queue.append(np.asarray(obs, dtype=np.float32).copy())
@@ -399,7 +452,16 @@ class DelayedActionMDPWrapper(gym.Wrapper):
         return flat_obs, info
 
     def step(self, action):
-        action = np.asarray(action, dtype=np.float32)
+        # Fixed real bug: np.asarray(action, dtype=np.float32) does NOT copy
+        # when `action` is already a float32 ndarray -- it returns the SAME
+        # object. If the caller reuses one buffer across steps (a common
+        # pattern to avoid per-step allocations) and mutates it in place
+        # after this call returns, that mutation silently corrupts the
+        # command we stashed in `_in_flight` for up to `capacity` future
+        # steps (confirmed empirically: pending_queue showed the caller's
+        # LATER mutated values instead of the action actually sent). Always
+        # take our own immutable snapshot at send time.
+        action = np.array(action, dtype=np.float32, copy=True)
         send_step = self._current_step
         delay = self._sample_delay()
         apply_step = send_step + delay

@@ -351,3 +351,143 @@ def test_high_speed_reward_unknown_shape_rejected():
     env = gym.make("racetrack-v0", config={"duration": 60})
     with pytest.raises(ValueError):
         HighSpeedRewardWrapper(env, coef=0.4, speed_limit=10.0, shape="quadratic")
+
+
+def test_hidden_mode_pending_queue_is_send_order_not_apply_order():
+    """Regression test for a real info-leak bug: in hidden-delay mode
+    (delay_known_to_agent=False), pending_queue used to always be sorted by
+    apply_step regardless of mode, which leaks the relative delay ranking
+    through slot position even though pending_remaining_time is zeroed.
+    Fixed by sorting by send_step (dispatch order, which the agent already
+    knows) whenever the delay is supposed to be hidden."""
+    env = make_env("racetrack", traffic_density="none", enable_delay_wrapper=True,
+                    action_delay_min_steps=0, action_delay_max_steps=6,
+                    delay_known_to_agent=False, delay_seed=0)
+    env.reset(seed=0)
+    wrapper = env
+    while not hasattr(wrapper, "_sample_delay"):
+        wrapper = wrapper.env
+    delays = iter([5, 1])  # cmd0 (send=0) applies at 5; cmd1 (send=1) applies sooner, at 2
+    wrapper._sample_delay = lambda: next(delays)
+    act_dim = env.action_space.shape[0]
+    a0 = np.full(act_dim, 0.1, dtype=np.float32)
+    a1 = np.full(act_dim, 0.2, dtype=np.float32)
+    env.step(a0)
+    _, _, _, _, info = env.step(a1)
+    pending_queue = info["delay_debug"]["pending_queue"]
+    # Send order (hidden-mode-correct): cmd0 first, then cmd1 -- NOT
+    # apply-step order, which would put cmd1 (sooner apply_step) first.
+    np.testing.assert_allclose(pending_queue[0], a0)
+    np.testing.assert_allclose(pending_queue[1], a1)
+    env.close()
+
+
+def test_known_mode_pending_queue_is_still_apply_order():
+    """Sanity check that the known-mode ordering (application order) was
+    NOT broken by the hidden-mode fix above."""
+    env = make_env("racetrack", traffic_density="none", enable_delay_wrapper=True,
+                    action_delay_min_steps=0, action_delay_max_steps=6,
+                    delay_known_to_agent=True, delay_seed=0)
+    env.reset(seed=0)
+    wrapper = env
+    while not hasattr(wrapper, "_sample_delay"):
+        wrapper = wrapper.env
+    delays = iter([5, 1])
+    wrapper._sample_delay = lambda: next(delays)
+    act_dim = env.action_space.shape[0]
+    a0 = np.full(act_dim, 0.1, dtype=np.float32)
+    a1 = np.full(act_dim, 0.2, dtype=np.float32)
+    env.step(a0)
+    _, _, _, _, info = env.step(a1)
+    pending_queue = info["delay_debug"]["pending_queue"]
+    # Apply order (known-mode-correct): cmd1 applies sooner (apply_step=2)
+    # than cmd0 (apply_step=5), so cmd1 comes first.
+    np.testing.assert_allclose(pending_queue[0], a1)
+    np.testing.assert_allclose(pending_queue[1], a0)
+    env.close()
+
+
+def test_reset_with_seed_reproduces_delay_sequence():
+    """Regression test for a real reproducibility bug: the delay RNG used
+    to be fixed once at __init__ and never touched by reset(), so
+    env.reset(seed=s) reproduced vehicle spawn/traffic but NOT the sampled
+    delay sequence -- calling reset(seed=41) twice in the same process gave
+    two DIFFERENT delay sequences. Fixed by re-deriving the delay RNG from
+    the reset seed whenever the wrapper itself was built without its own
+    pinned delay_seed."""
+    def delays_for_seed(seed):
+        env = make_env("racetrack", traffic_density="none", enable_delay_wrapper=True,
+                        action_delay_min_steps=0, action_delay_max_steps=6,
+                        delay_known_to_agent=False)  # no delay_seed pinned
+        env.reset(seed=seed)
+        # A FIXED action (not action_space.sample(), which draws from the
+        # global numpy RNG and is therefore itself not reproducible across
+        # calls/process state) so the only source of variation under test is
+        # the delay RNG itself, not incidentally-different termination points.
+        act_dim = env.action_space.shape[0]
+        action = np.zeros(act_dim, dtype=np.float32)
+        out = []
+        for _ in range(10):
+            _, _, term, trunc, info = env.step(action)
+            out.append(info["delay_debug"]["delay_sampled"])
+            if term or trunc:
+                env.reset(seed=seed)
+        env.close()
+        return out
+
+    a = delays_for_seed(123)
+    b = delays_for_seed(123)
+    assert a == b
+
+    # Different seeds should (overwhelmingly likely) give different sequences.
+    c = delays_for_seed(456)
+    assert a != c
+
+
+def test_explicit_wrapper_seed_is_not_overridden_by_reset_seed():
+    """When the wrapper IS constructed with its own pinned delay_seed,
+    env.reset(seed=...) must not override it -- the wrapper's own seed wins,
+    exactly as before this fix (only the "no wrapper seed given" case is new
+    behavior)."""
+    def delays_with_pinned_wrapper_seed(reset_seed):
+        env = make_env("racetrack", traffic_density="none", enable_delay_wrapper=True,
+                        action_delay_min_steps=0, action_delay_max_steps=6,
+                        delay_known_to_agent=False, delay_seed=777)  # pinned
+        env.reset(seed=reset_seed)
+        act_dim = env.action_space.shape[0]
+        action = np.zeros(act_dim, dtype=np.float32)
+        out = []
+        for _ in range(5):
+            _, _, term, trunc, info = env.step(action)
+            out.append(info["delay_debug"]["delay_sampled"])
+        env.close()
+        return out
+
+    a = delays_with_pinned_wrapper_seed(1)
+    b = delays_with_pinned_wrapper_seed(2)
+    assert a == b  # same pinned delay_seed -> same sequence regardless of reset(seed=...)
+
+
+def test_step_does_not_alias_callers_action_buffer():
+    """Regression test for a real aliasing bug (flagged independently in the
+    external CMP629 audit's diagnostics): np.asarray(action, dtype=float32)
+    does not copy when `action` is already a float32 ndarray. If the caller
+    reuses one buffer across steps and mutates it in place afterward, that
+    used to silently corrupt the command stashed in `_in_flight` -- a
+    pending command's action would change to whatever the caller later
+    wrote into the same buffer, even though the command itself was never
+    re-sent. Fixed by taking an explicit copy at send time."""
+    env = make_env("racetrack", traffic_density="none", enable_delay_wrapper=True,
+                    action_delay_min_steps=3, action_delay_max_steps=3,
+                    delay_known_to_agent=True, delay_seed=0)
+    env.reset(seed=0)
+    act_dim = env.action_space.shape[0]
+    buf = np.full(act_dim, 0.5, dtype=np.float32)
+    env.step(buf)          # send_step=0, action=0.5, delay=3 -> stays pending
+    buf[:] = 9.9            # caller mutates its OWN buffer after the call returns
+    _, _, _, _, info = env.step(buf)  # send_step=1
+    pending_queue = info["delay_debug"]["pending_queue"]
+    # The send_step=0 command must still show its ORIGINAL action (0.5),
+    # unaffected by the caller mutating their buffer afterward.
+    np.testing.assert_allclose(pending_queue[0], [0.5] * act_dim)
+    env.close()
