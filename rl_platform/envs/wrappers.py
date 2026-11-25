@@ -83,22 +83,58 @@ class HighSpeedRewardWrapper(gym.Wrapper):
     all and reliably converges to crawling around the track at low speed --
     which we observed empirically before adding this fix (see RESULTS.md).
 
-    Adds `coef * clip(speed / speed_limit, 0, 1.2)` to the reward each step,
-    gated to 0 off-road (consistent with the base env's own on-road gating)
-    so the agent can't farm the speed bonus by cutting corners off-track.
+    Two interchangeable shapes for the bonus, both gated to 0 off-road
+    (consistent with the base env's own on-road gating) so the agent can't
+    farm the speed bonus by cutting corners off-track:
+
+    - ``shape="linear"`` (default, original/unchanged behavior): adds
+      ``coef * clip(speed / speed_limit, 0, 1.2)``. Monotonic ramp with two
+      hard elbows (floor at 0 -- so standing still and reversing are both
+      exactly neutral, never penalized -- and a soft ceiling at 1.2x), no
+      diminishing returns below the ceiling.
+    - ``shape="tanh"``: adds ``coef * tanh((speed - v0) / steepness)``, an
+      S-curve matching the discouraging-crawling / rewarding-driving /
+      diminishing-returns-at-high-speed shape requested explicitly in
+      conversation: a small, bounded NEGATIVE bonus for standing still or
+      reversing (both saturate near -coef rather than growing unbounded),
+      a steep rise through zero just past ``v0``, and a flattening
+      (saturating near +coef, not linearly unbounded) approach to the top
+      speed range -- instead of a flat 0 below the limit and a hard ceiling
+      above it. ``v0`` and ``steepness`` default to fractions of
+      ``speed_limit`` (``v0_frac``/``steepness_frac``) so they scale
+      automatically with whatever speed_limit a config uses.
     """
 
-    def __init__(self, env: gym.Env, coef: float, speed_limit: float):
+    def __init__(
+        self,
+        env: gym.Env,
+        coef: float,
+        speed_limit: float,
+        shape: str = "linear",
+        v0_frac: float = 0.1,
+        steepness_frac: float = 0.3,
+    ):
         super().__init__(env)
+        if shape not in ("linear", "tanh"):
+            raise ValueError(f"Unknown HighSpeedRewardWrapper shape: {shape!r}")
         self.coef = coef
         self.speed_limit = speed_limit
+        self.shape = shape
+        self.v0 = v0_frac * speed_limit
+        self.steepness = steepness_frac * speed_limit
+
+    def _speed_bonus(self, speed: float) -> float:
+        if self.shape == "linear":
+            speed_frac = float(np.clip(speed / self.speed_limit, 0.0, 1.2))
+            return self.coef * speed_frac
+        # shape == "tanh"
+        return self.coef * float(np.tanh((speed - self.v0) / self.steepness))
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
         on_road = info.get("rewards", {}).get("on_road_reward", True)
         speed = info.get("speed", 0.0)
-        speed_frac = float(np.clip(speed / self.speed_limit, 0.0, 1.2)) if on_road else 0.0
-        bonus = self.coef * speed_frac
+        bonus = self._speed_bonus(speed) if on_road else 0.0
         info = dict(info)
         info["speed_bonus"] = bonus
         return obs, reward + bonus, terminated, truncated, info

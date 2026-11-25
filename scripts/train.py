@@ -49,6 +49,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--high-speed-reward", type=float, default=0.4, help="coefficient for the speed-bonus reward wrapper")
     p.add_argument("--collision-reward", type=float, default=-5.0)
     p.add_argument("--action-reward", type=float, default=-0.1)
+    p.add_argument("--speed-reward-shape", default="linear", choices=["linear", "tanh"],
+                    help="'linear' (default, original): coef*clip(speed/speed_limit,0,1.2), never negative. "
+                         "'tanh': coef*tanh((speed-v0)/steepness) -- small bounded negative bonus "
+                         "standing still/reversing, steep rise, diminishing returns at high speed.")
+    p.add_argument("--speed-reward-v0-frac", type=float, default=0.1,
+                    help="(tanh shape only) zero-crossing speed as a fraction of speed_limit")
+    p.add_argument("--speed-reward-steepness-frac", type=float, default=0.3,
+                    help="(tanh shape only) rise steepness as a fraction of speed_limit")
 
     add_env_cli_args(p)
     return p
@@ -80,6 +88,9 @@ def main(argv=None):
             high_speed_reward=args.high_speed_reward,
             collision_reward=args.collision_reward,
             action_reward=args.action_reward,
+            speed_reward_shape=args.speed_reward_shape,
+            speed_reward_v0_frac=args.speed_reward_v0_frac,
+            speed_reward_steepness_frac=args.speed_reward_steepness_frac,
         )
         kwargs.update(env_kwargs_from_args(args, delay_seed=args.seed))
         return make_env(args.env, **kwargs)

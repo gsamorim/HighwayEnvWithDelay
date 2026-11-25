@@ -58,64 +58,115 @@ if ($LASTEXITCODE -ne 0) { throw "A gravação falhou." }
 Invoke-Item $video
 ```
 
-## 3. O começo do bloco define o experimento
+## 3. Primeiras quatro linhas do exemplo
 
-`$config` aponta para o [arquivo JSONC do experimento](configs/racetrack_experiment_config.jsonc), que aceita comentários. Os scripts leem o arquivo com `--config`. Uma opção explícita no comando tem prioridade sobre a chave correspondente no JSONC. Uma chave omitida ou com valor `null` deixa o script usar seu próprio padrão.
+Este trecho começa em `$config = ...` e termina em `$passos = 5000`, inclusive. A próxima linha de código, `foreach ($reta in $retas) {`, já inicia o treino.
 
-`$saida` cria um caminho com data e hora para reunir os arquivos do grupo. `$retas` lista os três comprimentos a testar e também fornece as opções da pergunta no terminal. `$passos` fixa o mesmo orçamento de treino para as três rodadas.
+```powershell
+$config = "configs/racetrack_experiment_config.jsonc"
+$saida = "results/tutorial/$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+$retas = @("80", "30", "5")
+$passos = 5000
+```
+
+| Linha a editar no PowerShell | Exemplo de substituição | O que muda |
+| --- | --- | --- |
+| `$config = "configs/racetrack_experiment_config.jsonc"` | `$config = "configs/meu_experimento.jsonc"` | Faz treino e gravação lerem outro JSONC. Crie esse arquivo copiando o original antes de mudar o caminho. |
+| `$saida = "results/tutorial/$(Get-Date -Format 'yyyyMMdd-HHmmss')"` | `$saida = "results/experimento/$(Get-Date -Format 'yyyyMMdd-HHmmss')"` | Troca a pasta que reúne logs, gráficos, modelos e vídeo. A data e a hora identificam o grupo. |
+| `$retas = @("80", "30", "5")` | `$retas = @("80", "60", "5")` | Troca a reta de 30 m pela de 60 m. A pergunta de gravação oferece os valores dessa mesma lista. |
+| `$passos = 5000` | `$passos = 2500` | Encurta o treino de cada pista. No exemplo, a avaliação e o checkpoint periódico acompanham o novo total. |
+
+Além dessas quatro linhas de PowerShell, o exemplo lê o [arquivo de configuração](configs/racetrack_experiment_config.jsonc). Para as opções abaixo, abra esse arquivo, encontre a chave com `Ctrl+F` e substitua o valor na linha existente. Mantenha as aspas de texto e a vírgula da linha. Uma opção explícita no PowerShell prevalece sobre a chave correspondente no JSONC. Quando uma chave está ausente ou vale `null`, o script usa seu padrão.
 
 ### Pista, obstáculos e tráfego
 
-| Chave no JSONC | Valor neste exemplo | O que controla |
+| Linha atual no JSONC | Exemplo de substituição | O que muda |
 | --- | --- | --- |
-| `env` | `racetrack_oval` | Seleciona a entrada do registro do projeto que constrói o ambiente oval. Para mudar pelo terminal, use `--env`. |
-| `env_id` | `racetrack-oval-v0` | Seleciona a versão da pista no HighwayEnv. `--env-id` substitui esse valor. Para usar uma pista comum, combine `"env": "racetrack"` com um ID compatível, como `racetrack-v0`, e deixe as opções exclusivas do oval como `null`. |
-| `oval_straight_length_m` | `80`, `30` e `5`, um por rodada | Define o comprimento da reta em metros. O JSONC traz `30` e o laço substitui esse valor com `--oval-straight-length-m`. |
-| `oval_obstacle_preset` | `null` | Mantém a pista sem um cenário de obstáculos adicional. Com `--oval-obstacle-preset`, `block_lane` coloca obstáculos na faixa central e `force_decision` coloca obstáculos nas faixas laterais do oval padrão. |
-| `traffic` | `medium` | Controla a intensidade do tráfego. Os níveis `none`, `light`, `medium`, `heavy` e `jam` configuram limites de 0, 2, 5, 10 e 16 outros veículos. Use `--traffic` com um desses nomes ou um inteiro. A quantidade efetiva pode variar a cada episódio. |
-| `traffic_speed_min` e `traffic_speed_max` | `null` para ambas | Mantêm a velocidade inicial nativa dos carros do tráfego. Use `--traffic-speed-min` e `--traffic-speed-max` juntas para sortear velocidades iniciais dentro de uma faixa em m/s. |
+| `"env": "racetrack_oval",` | `"env": "racetrack",` | Seleciona a entrada que monta o ambiente no projeto. O `env_id` explícito continua determinando qual pista será usada. |
+| `"env_id": "racetrack-oval-v0",` | `"env_id": "racetrack-oval-v1",` | Troca a versão da pista do HighwayEnv. Esta linha fica logo abaixo de `"env": "racetrack_oval",`. |
+| `"oval_straight_length_m": 30,` | `"oval_straight_length_m": 60,` | Troca a reta padrão para 60 m. Para trocar uma reta **neste exemplo**, mude a linha `$retas = @("80", "30", "5")` no PowerShell, pois os dois comandos passam o comprimento explicitamente. |
+| `"oval_obstacle_preset": null,` | `"oval_obstacle_preset": "force_decision",` | Coloca obstáculos nas laterais do oval padrão. Já `"block_lane"` coloca obstáculos na faixa central. `null` desativa esses cenários. |
+| `"traffic": "medium",` | `"traffic": "heavy",` | Aumenta a densidade de tráfego. `none`, `light`, `medium`, `heavy` e `jam` correspondem a limites de 0, 2, 5, 10 e 16 veículos. A quantidade efetiva pode variar a cada episódio. |
+| `"traffic_speed_min": null,` | `"traffic_speed_min": 6.0,` | Define a menor velocidade inicial sorteada, em m/s. Preencha também a linha do máximo. |
+| `"traffic_speed_max": null,` | `"traffic_speed_max": 9.0,` | Define a maior velocidade inicial sorteada, em m/s. Com as duas linhas em `null`, o tráfego usa a velocidade inicial nativa. |
+
+Para testar outra versão do oval com obstáculos, faça as duas substituições de `env_id` e `oval_obstacle_preset` no JSONC. Os comandos de treino e gravação já leem esse mesmo arquivo. Se usar uma pista comum, escolha um ID como `racetrack-v0`, deixe `oval_straight_length_m` e `oval_obstacle_preset` em `null` e remova `--oval-straight-length-m $reta` do treino e `--oval-straight-length-m $escolha` da gravação.
+
+Para reproduzir o treino do tutorial, mantenha `"oval_obstacle_preset": null,`. Nos testes com `"block_lane"` e reta de 80 m, a observação inicial continha valores inválidos (`NaN`) para o SAC.
 
 O `SafeSpawnWrapper` corrige a posição inicial do carro do agente quando o HighwayEnv o coloca fora da faixa. A correção permite usar as retas de 5 m e 30 m. Com tráfego, ainda pode haver colisão logo após a largada.
 
 ### Atraso de ação e de observação
 
-| Chave no JSONC | Valor neste exemplo | O que controla |
+| Linha atual no JSONC | Exemplo de substituição | O que muda |
 | --- | --- | --- |
-| `enable_delay_wrapper` | `true` | Ativa a simulação de atraso e acrescenta à observação o histórico de comandos, a fila de pendências, os tempos restantes e a última ação aplicada. `--enable-delay-wrapper` liga essa opção pelo terminal. |
-| `action_delay_min_steps` e `action_delay_max_steps` | `0` e `3` | Sorteiam para cada comando um atraso inteiro de 0 a 3 passos de decisão. Use `--action-delay-min-steps` e `--action-delay-max-steps` para ajustar a faixa. O limite atual é 6 passos. Valores iguais tornam o atraso fixo. |
-| `delay_known_to_agent` | `true` | Informa ao agente quantos passos faltam para cada comando pendente chegar. `--delay-known-to-agent` liga essa informação e `false` no JSONC oculta os tempos. |
-| `observation_delay_steps` | `0` | Entrega a observação da pista sem atraso adicional. `--observation-delay-steps` define um atraso fixo para essa observação. |
+| `"enable_delay_wrapper": true,` | `"enable_delay_wrapper": false,` | Desliga a simulação de atraso e retira da observação o histórico de ações, a fila, os tempos restantes e a última ação aplicada. Isso muda o formato de entrada do modelo. |
+| `"action_delay_min_steps": 0,` | `"action_delay_min_steps": 2,` | Com o máximo original em 3, passa a sortear atrasos de 2 a 3 passos por comando. |
+| `"action_delay_max_steps": 3,` | `"action_delay_max_steps": 6,` | Com o mínimo original em 0, amplia a faixa para 0 a 6 passos. Use mínimo menor ou igual ao máximo, com os dois entre 0 e 6. Valores iguais dão atraso fixo. |
+| `"delay_known_to_agent": true,` | `"delay_known_to_agent": false,` | Zera os tempos restantes mostrados ao agente. O atraso e o formato de entrada continuam ativos. |
+| `"observation_delay_steps": 0,` | `"observation_delay_steps": 2,` | A observação do ambiente chega dois passos depois. O valor `0` entrega a observação sem atraso adicional. |
 
 O carro mantém o último comando aplicado enquanto espera um novo. Um comando antigo que chega depois que um mais recente já foi aplicado é descartado. A frequência padrão do projeto é de cinco decisões por segundo simulado, então três passos de atraso equivalem a 0,6 s. Para comparar com atraso de ação zero usando o mesmo formato de entrada, mantenha `"enable_delay_wrapper": true` e coloque os dois limites do atraso de ação em `0`.
 
+### Recompensa do treino e da avaliação
+
+Essas linhas ficam sob `Reward shaping` no JSONC. No exemplo completo, `null` mantém os padrões de `scripts/train.py`. Os ajustes da tabela podem ser feitos individualmente, desde que a curva esteja em `"tanh"` para usar os dois parâmetros específicos dela.
+
+| Linha atual no JSONC | Exemplo de substituição | O que muda |
+| --- | --- | --- |
+| `"high_speed_reward": null,` | `"high_speed_reward": 0.6,` | Aumenta de 0,4 para 0,6 o peso do termo de velocidade. Use `0` para desativá-lo. |
+| `"collision_reward": null,` | `"collision_reward": -8.0,` | Aumenta a penalidade de colisão. O peso padrão é −5,0. |
+| `"action_reward": null,` | `"action_reward": -0.2,` | Aumenta o custo de ações de maior magnitude. O peso padrão é −0,1. |
+| `"speed_reward_shape": null,` | `"speed_reward_shape": "tanh",` | Troca a curva linear padrão por uma curva em S. O termo pode ser negativo quando o carro está parado ou muito lento e se aproxima de um teto em alta velocidade. |
+| `"speed_reward_v0_frac": null,` | `"speed_reward_v0_frac": 0.2,` | Com `"tanh"`, faz o termo cruzar zero a 20% do limite de velocidade, em vez dos 10% padrão. |
+| `"speed_reward_steepness_frac": null,` | `"speed_reward_steepness_frac": 0.2,` | Com `"tanh"`, torna a subida em torno desse ponto mais rápida que no padrão de 0,3. |
+
+O `HighSpeedRewardWrapper` usa a **velocidade com sinal** do carro. Acelerar altera a velocidade ao longo do tempo. Já `action_reward` controla separadamente o custo da ação de acelerar ou esterçar.
+
+- **`linear` (padrão)** usa `coef * clip(speed / speed_limit, 0, 1.2)`. Com o peso padrão positivo, o termo é zero parado ou de ré, aumenta com a velocidade à frente e fica limitado a `1.2 * coef`. Ficar parado na pista não rende bônus de velocidade.
+- **`tanh`** usa `coef * tanh((speed - v0) / steepness)`. O termo é negativo abaixo de `v0`, vale zero em `v0` e cresce mais rápido perto desse ponto. Ele se aproxima de `-coef` em marcha a ré e de `+coef` em alta velocidade, com ganho cada vez menor.
+
+`v0` e `steepness` são as frações do limite de velocidade da tabela multiplicadas por `speed_limit`. Com o limite padrão de 10 m/s e as frações padrão de 0,1 e 0,3, o cruzamento ocorre a 1 m/s e a escala da transição é de 3 m/s. Com `coef = 0.4`, o termo `tanh` vale aproximadamente −0,13 quando o carro está parado. Fora da pista, o wrapper zera esse termo nos dois formatos.
+
+**Onde ativar pelo PowerShell.** No comando `scripts/train.py`, localize a linha com `--total-steps $passos --start-steps 300 --learning-starts 300`. Substitua essa linha pelas duas abaixo, preservando o acento grave no fim de cada uma.
+
+```powershell
+        --total-steps $passos --start-steps 300 --learning-starts 300 `
+        --speed-reward-shape tanh --speed-reward-v0-frac 0.1 --speed-reward-steepness-frac 0.3 `
+```
+
+Esse exemplo ativa `tanh` com as frações padrão. No JSONC, a mudança equivalente é trocar `"speed_reward_shape": null,` por `"speed_reward_shape": "tanh",` e deixar as duas frações em `null`. O formato afeta o treino e a avaliação que o treino imprime. O gravador carrega a política treinada e usa a recompensa padrão do ambiente para o retorno exibido no vídeo.
+
 ## 4. O laço treina e salva um modelo por pista
 
-`foreach` executa `scripts/train.py` uma vez para cada reta. Cada execução começa com um agente novo. `$nome` vira `oval80m`, `oval30m` ou `oval5m` e identifica os arquivos da rodada. A checagem de `$LASTEXITCODE` interrompe o grupo se algum comando falhar.
+Este trecho começa em `foreach ($reta in $retas) {` e vai até a chave `}` imediatamente antes de `do {`. O laço executa `scripts/train.py` uma vez por reta, com um agente novo a cada rodada. A checagem de `$LASTEXITCODE` interrompe o grupo se o treino falhar. Na tabela, altere o trecho indicado na linha em que ele aparece.
 
-| Opção | Valor neste exemplo | O que controla |
+| Trecho atual no PowerShell | Exemplo de substituição | O que muda |
 | --- | --- | --- |
-| `--agent` | `sac` | Usa o agente SAC (Soft Actor-Critic), que aprende a comandar aceleração e direção. `--agent random` serve como referência de ações aleatórias. |
-| `--seed` / `seed` | `0` | Define a semente usada para iniciar o treino, incluindo a inicialização do SAC, o primeiro reset do ambiente e o sorteio dos atrasos. |
-| `--run-name` / `run_name` | `oval80m`, `oval30m` ou `oval5m` | Dá nome à execução. Com `"run_name": null` no JSONC e sem essa opção, o script monta um nome automaticamente. |
-| `--total-steps` / `total_steps` | `5000` | Define quantas ações a rodada envia ao ambiente. Substitui os `50000` do JSONC. Para uma demonstração mais curta, ajuste `$passos` para `2500` antes de rodar o bloco. |
-| `--start-steps` | `300` | Usa ações aleatórias nos primeiros 300 passos para explorar e coletar experiência. |
-| `--learning-starts` | `300` | Exige pelo menos 300 transições guardadas para o SAC atualizar a rede. O treinador inicia as atualizações depois da exploração inicial, quando também há dados suficientes para o lote. |
-| `--checkpoint-every-steps` | `$passos` | Salva um checkpoint periódico no último passo do exemplo. O treinador salva também um arquivo `_final.pt` ao terminar. |
+| `--agent sac` | `--agent random` | Usa um agente de referência que toma ações aleatórias. Para gravar essa referência, use `--agent random` nos dois comandos e retire `--checkpoint` com seu caminho do gravador, pois o agente aleatório não salva pesos. |
+| `--seed 0` | `--seed 1` | Muda a semente de inicialização do SAC, do primeiro reset e do sorteio dos atrasos. A opção prevalece sobre `"seed": 0,` no JSONC durante o treino. |
+| `$nome = "oval${reta}m"` | `$nome = "teste_oval${reta}m"` | `--run-name $nome` usa esse nome, por exemplo `teste_oval80m`. O comando prevalece sobre `"run_name": null,` no JSONC. Repita o prefixo em `$nome = "teste_oval${escolha}m"` na gravação para encontrar os arquivos. |
+| `--total-steps $passos` | Mantenha o trecho e troque `$passos = 5000` por `$passos = 2500` nas primeiras quatro linhas. | Reduz a quantidade de passos por treino mantendo a avaliação no último passo. O PowerShell prevalece sobre `"total_steps": 50000,` no JSONC. |
+| `--start-steps 300` | `--start-steps 600` | Usa ações aleatórias nos primeiros 600 passos em vez de 300. |
+| `--learning-starts 300` | `--learning-starts 600` | Exige pelo menos 600 transições guardadas para o SAC atualizar a rede. A atualização também depende de terminar a exploração inicial e ter dados suficientes para o lote. |
+| `--checkpoint-every-steps $passos` | `--checkpoint-every-steps 2500` | Salva um checkpoint periódico a cada 2.500 passos. O treinador grava também o modelo `_final.pt` ao terminar. |
 
-Para cada execução, o script grava os resultados nas subpastas abaixo. Os nomes ilustram a rodada de 80 m.
+A última linha do comando de treino define as subpastas. Se quiser mover todos os resultados juntos, prefira mudar `$saida` no início do exemplo.
 
-| Opção | Arquivo dentro de `$saida` | Conteúdo |
+| Trecho atual no PowerShell | Exemplo de substituição | Arquivo gerado |
 | --- | --- | --- |
-| `--log-dir` | `logs/oval80m.csv` e `logs/oval80m.meta.json` | Métricas dos episódios de treino e configurações efetivas da rodada. |
-| `--plot-dir` | `plots/oval80m.png` | Curvas de treino com retorno, colisões, velocidade e temperatura de entropia do SAC. |
-| `--checkpoint-dir` | `checkpoints/oval80m_step5000.pt` e `checkpoints/oval80m_final.pt` | Checkpoint periódico e modelo final. A gravação usa o arquivo final. |
+| `--log-dir "$saida/logs"` | `--log-dir "$saida/csv"` | Muda a pasta do CSV com métricas de treino e do JSON com as configurações efetivas. |
+| `--plot-dir "$saida/plots"` | `--plot-dir "$saida/figuras"` | Muda a pasta dos PNGs com retorno, colisões, velocidade e temperatura de entropia do SAC. |
+| `--checkpoint-dir "$saida/checkpoints"` | `--checkpoint-dir "$saida/modelos"` | Muda a pasta dos checkpoints. Nesse caso, troque também `--checkpoint "$saida/checkpoints/${nome}_final.pt"` por `--checkpoint "$saida/modelos/${nome}_final.pt"` na gravação. |
 
 ## 5. A avaliação ajuda a escolher o que gravar
 
-| Opção | Valor neste exemplo | O que controla |
+As opções de avaliação ficam na mesma linha do comando de treino que `--checkpoint-every-steps $passos`. A escolha do modelo aparece depois dos treinos, em `do {` até `} until ($escolha -in $retas)`.
+
+| Trecho atual no PowerShell | Exemplo de substituição | O que muda |
 | --- | --- | --- |
-| `--eval-every-steps` | `$passos` | Roda uma avaliação a cada intervalo de passos. Com o intervalo igual ao total, há uma avaliação no fim de cada treino. |
-| `--eval-episodes` / `eval_episodes` | `2` | Roda dois episódios de avaliação com a política treinada, sem atualizar a rede. Substitui os cinco episódios do JSONC. |
+| `--eval-every-steps $passos` | `--eval-every-steps 2500` | Com 5.000 passos, avalia também no passo 2.500. Para comparar as pistas ao final, leia a linha do passo 5.000 de cada uma. |
+| `--eval-episodes 2` | `--eval-episodes 5` | Roda cinco episódios de avaliação sem atualizar a rede. Essa opção prevalece sobre `"eval_episodes": 5,` no JSONC. |
 
 A avaliação de cada pista aparece no terminal neste formato:
 
@@ -132,13 +183,15 @@ Ao final dos três treinos, digite a reta escolhida na pergunta do terminal. O P
 
 ## 6. A última parte carrega o modelo e abre o vídeo
 
-`scripts/record.py` usa a resposta do terminal para definir o comprimento da reta e localizar o checkpoint correspondente.
+O trecho da gravação começa em `$nome = "oval${escolha}m"` e termina em `Invoke-Item $video`. `scripts/record.py` usa a resposta do terminal para escolher o comprimento da reta e localizar o checkpoint.
 
-| Opção | O que faz neste exemplo |
-| --- | --- |
-| `--config`, `--agent` e `--oval-straight-length-m` | Recriam o ambiente e o agente com o mesmo JSONC, o mesmo tipo de agente e a mesma reta do treino escolhido. Se você sobrepuser tráfego, obstáculos ou atraso no treino, repita esses ajustes na gravação. |
-| `--checkpoint` | Carrega `checkpoints/<nome>_final.pt` do grupo atual. |
-| `--episodes 3` | Grava três episódios novos do agente. O gravador começa pela semente do JSONC, `0` neste exemplo, e usa uma semente sucessiva para cada episódio. Você pode trocá-la com `--seed`. |
-| `--out` | Salva o vídeo em `$saida/best_run.mp4`. `--fps` define os quadros por segundo do arquivo, 15 por padrão, e `--gif` também salva uma cópia em GIF. |
+| Trecho atual no PowerShell | Onde e como editar | O que muda |
+| --- | --- | --- |
+| `--config $config` e `--agent sac` | Para trocar o arquivo, mude `$config = ...` nas primeiras quatro linhas. Para trocar o agente, use o mesmo valor de `--agent` no treino e na gravação. | Recria o ambiente e o tipo de agente do treino escolhido. Ajustes de pista, tráfego e atraso feitos no JSONC já são lidos pelos dois comandos. |
+| `--oval-straight-length-m $escolha` | Escolha a reta na pergunta do terminal. Para oferecer outros valores, mude `$retas = ...` no início do bloco. | Usa a mesma geometria que foi usada para treinar o modelo escolhido. |
+| `--checkpoint "$saida/checkpoints/${nome}_final.pt"` | Troque por `--checkpoint "$saida/checkpoints/${nome}_step5000.pt"` para usar o checkpoint periódico, se gerado. | Muda o arquivo de pesos carregado. |
+| `--episodes 3` | `--episodes 1` | Grava um episódio em vez de três. O gravador começa pela semente do JSONC, `0` neste exemplo, e usa uma semente sucessiva por episódio. |
+| `$video = "$saida/best_run.mp4"` | `$video = "$saida/demonstracao.mp4"` | Muda o nome usado por `--out $video` e por `Invoke-Item $video`. |
+| `--episodes 3 --out $video` | `--episodes 3 --out $video --seed 123 --fps 10 --gif` | Começa pela semente 123, salva o MP4 a 10 quadros por segundo em vez de 15 e grava também um GIF. |
 
 O gravador renderiza em segundo plano. `Invoke-Item` abre o MP4 no player padrão depois que o arquivo é salvo. Se aparecer `size mismatch` ao carregar o modelo, confira `enable_delay_wrapper`. Treino e gravação precisam usar o mesmo formato de observação.

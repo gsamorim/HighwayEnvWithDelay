@@ -92,6 +92,13 @@ class RacetrackEnvConfig:
     # is silently ignored. This field instead drives `HighSpeedRewardWrapper`,
     # a reward wrapper applied on top of the env -- see wrappers.py.
     high_speed_reward: float = 0.4
+    # "linear" (default, original behavior): coef * clip(speed/speed_limit, 0, 1.2).
+    # "tanh": coef * tanh((speed - v0_frac*speed_limit) / (steepness_frac*speed_limit)) --
+    # small bounded NEGATIVE bonus standing still/reversing, steep rise around
+    # v0, diminishing returns (saturating, not unbounded) at high speed.
+    speed_reward_shape: str = "linear"
+    speed_reward_v0_frac: float = 0.1
+    speed_reward_steepness_frac: float = 0.3
     reward_scale: float = 1.0
 
     # --- Oval track variant (racetrack-oval-* only) -------------------------
@@ -257,7 +264,14 @@ def make_racetrack_env(
             raise ValueError("traffic_speed_min and traffic_speed_max must be set together (or both left None).")
         env = TrafficSpeedWrapper(env, speed_min=config.traffic_speed_min, speed_max=config.traffic_speed_max)
     if config.high_speed_reward != 0.0:
-        env = HighSpeedRewardWrapper(env, coef=config.high_speed_reward, speed_limit=config.speed_limit)
+        env = HighSpeedRewardWrapper(
+            env,
+            coef=config.high_speed_reward,
+            speed_limit=config.speed_limit,
+            shape=config.speed_reward_shape,
+            v0_frac=config.speed_reward_v0_frac,
+            steepness_frac=config.speed_reward_steepness_frac,
+        )
     if config.reward_scale != 1.0:
         env = RewardScaler(env, scale=config.reward_scale)
     if flatten_obs:

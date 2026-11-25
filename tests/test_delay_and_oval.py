@@ -7,6 +7,7 @@ import sys
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import gymnasium as gym
 import numpy as np
 import pytest
 
@@ -267,3 +268,86 @@ def test_safe_spawn_fix_is_a_noop_when_native_spawn_was_already_valid():
     lane = env.unwrapped.road.network.get_lane(vehicle.lane_index)
     assert lane.on_lane(vehicle.position)
     env.close()
+
+
+def test_high_speed_reward_linear_shape_matches_original_behavior():
+    """Default shape ("linear") must stay byte-identical to the original,
+    pre-existing formula: coef * clip(speed/speed_limit, 0, 1.2), never
+    negative, flat 0 at/below standstill."""
+    from rl_platform.envs.wrappers import HighSpeedRewardWrapper
+
+    class _FakeSpeedEnv(gym.Wrapper):
+        def __init__(self, speed):
+            super().__init__(gym.make("racetrack-v0", config={"duration": 60}))
+            self._speed = speed
+
+        def step(self, action):
+            obs, reward, terminated, truncated, info = self.env.step(action)
+            info = dict(info)
+            info["speed"] = self._speed
+            return obs, reward, terminated, truncated, info
+
+    for speed in (-5.0, 0.0, 3.0, 10.0, 15.0):
+        env = _FakeSpeedEnv(speed)
+        env.reset(seed=0)
+        env = HighSpeedRewardWrapper(env, coef=0.4, speed_limit=10.0, shape="linear")
+        _, _, _, _, info = env.step(env.action_space.sample())
+        expected = 0.4 * float(np.clip(speed / 10.0, 0.0, 1.2))
+        assert info["speed_bonus"] == pytest.approx(expected)
+        env.close()
+
+
+def test_high_speed_reward_tanh_shape_is_negative_at_standstill_and_saturates():
+    """The "tanh" shape must match the explicitly requested curve: a small,
+    BOUNDED negative bonus standing still or reversing (never unbounded),
+    crossing zero a bit past standstill, and saturating (diminishing
+    returns) rather than growing without limit at high speed."""
+    from rl_platform.envs.wrappers import HighSpeedRewardWrapper
+
+    class _FakeSpeedEnv(gym.Wrapper):
+        def __init__(self, speed):
+            super().__init__(gym.make("racetrack-v0", config={"duration": 60}))
+            self._speed = speed
+
+        def step(self, action):
+            obs, reward, terminated, truncated, info = self.env.step(action)
+            info = dict(info)
+            info["speed"] = self._speed
+            return obs, reward, terminated, truncated, info
+
+    def bonus_at(speed):
+        env = _FakeSpeedEnv(speed)
+        env.reset(seed=0)
+        env = HighSpeedRewardWrapper(
+            env, coef=0.4, speed_limit=10.0, shape="tanh",
+            v0_frac=0.1, steepness_frac=0.3,
+        )
+        _, _, _, _, info = env.step(env.action_space.sample())
+        env.close()
+        return info["speed_bonus"]
+
+    standstill = bonus_at(0.0)
+    reverse = bonus_at(-5.0)
+    deep_reverse = bonus_at(-50.0)
+    medium = bonus_at(5.0)
+    at_limit = bonus_at(10.0)
+    way_above_limit = bonus_at(100.0)
+
+    # Standing still and reversing are both negative but small/bounded.
+    assert standstill < 0
+    assert reverse < 0
+    assert -0.4 <= deep_reverse < -0.3  # saturates near -coef, never below it
+    # Monotonically increasing with speed.
+    assert standstill < medium < at_limit
+    # Diminishing returns / saturation: the jump from "at limit" to "way
+    # above limit" is much smaller than from "standstill" to "medium".
+    assert (at_limit - medium) > (way_above_limit - at_limit)
+    assert 0.3 < way_above_limit <= 0.4  # saturates near +coef, never exceeds it
+
+
+def test_high_speed_reward_unknown_shape_rejected():
+    from rl_platform.envs.wrappers import HighSpeedRewardWrapper
+
+    env = gym.make("racetrack-v0", config={"duration": 60})
+    with pytest.raises(ValueError):
+        HighSpeedRewardWrapper(env, coef=0.4, speed_limit=10.0, shape="quadratic")

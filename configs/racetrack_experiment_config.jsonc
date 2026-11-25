@@ -54,6 +54,21 @@
   // --- 6) Traffic intensity (native `other_vehicles`, via named presets) ---
   "traffic": "medium",         // "none" | "light" | "medium" | "heavy" | "jam", or an int
 
+  // --- Reward shaping (ours; racetrack has no native speed term) -----------
+  "high_speed_reward": null,          // null = train.py default (0.4)
+  "collision_reward": null,           // null = train.py default (-5.0)
+  "action_reward": null,              // null = train.py default (-0.1)
+  "speed_reward_shape": null,         // null = "linear" (original, unchanged
+                                       // behavior: coef*clip(speed/speed_limit,
+                                       // 0,1.2), never negative). Set to
+                                       // "tanh" for an S-curve: small bounded
+                                       // NEGATIVE bonus standing still/reversing,
+                                       // steep rise, diminishing returns (not
+                                       // unbounded) at high speed -- see
+                                       // HighSpeedRewardWrapper docstring.
+  "speed_reward_v0_frac": null,       // null = 0.1 ("tanh" shape only)
+  "speed_reward_steepness_frac": null, // null = 0.3 ("tanh" shape only)
+
   // --- 1) Delay / RDMDP-style augmented state (ours) -----------------------
   "enable_delay_wrapper": true,   // false = baseline, zero extra obs dims
   "action_delay_min_steps": 0,
