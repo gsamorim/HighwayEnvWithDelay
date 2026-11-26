@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=rl-setup
-#SBATCH --partition=draco
+#SBATCH --partition=shared
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=32G
+#SBATCH --cpus-per-task=20
+#SBATCH --mem=24G
 #SBATCH --time=01:00:00
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
@@ -73,8 +73,10 @@ wait
 "$VENV/bin/python" - "$OUT" <<'EOF'
 import json, sys, glob
 for a in ("sac", "ppo"):
-    t = [json.load(open(f))["train_wall_time_s"] for f in glob.glob(f"{sys.argv[1]}/{a}_*/meta.json")]
-    sps = [3000 / x for x in t]
-    print(f"{a}: {len(t)} treinos, {min(sps):.0f}-{max(sps):.0f} passos/s (média {sum(sps)/len(sps):.0f})")
+    metas = [json.load(open(f)) for f in glob.glob(f"{sys.argv[1]}/{a}_*/meta.json")]
+    # passos EXECUTADOS (o PPO arredonda 3000 para 4096 = 2 rollouts de 2048)
+    sps = [m["timesteps_executed"] / m["train_wall_time_s"] for m in metas]
+    print(f"{a}: {len(sps)} treinos, {min(sps):.1f}-{max(sps):.1f} passos/s (média {sum(sps)/len(sps):.1f}); "
+          f"300k passos ≈ {300000 / (sum(sps)/len(sps)) / 3600:.1f} h")
 EOF
 echo; echo "=== CONCLUÍDO ==="

@@ -4,8 +4,9 @@ Regras do PCAD que valem aqui: nada de processamento no frontend (só editar,
 copiar e submeter); nada de colar scripts no terminal (o terminal indenta e
 quebra `#SBATCH`); arquivos vão por `rsync`.
 
-Fila: `draco` (2 × Xeon E5-2640 v2, 16 núcleos / 32 threads, 64 GB), livre
-para qualquer conta. `cei`, `tsubasa`, `cidia`, `saude`, `grace` e `blaise`
+Fila: `shared` (nós draco1–7 e bali2), aberta a qualquer conta. A fila
+`draco` exige grupo específico. Jobs em filas ocultas só aparecem com
+`squeue -a`. `cei`, `tsubasa`, `cidia`, `saude`, `grace` e `blaise`
 são de projetos e exigem permissão do coordenador — não usar.
 
 ## 1. Enviar o código (da sua máquina)

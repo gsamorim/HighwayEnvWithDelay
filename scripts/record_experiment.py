@@ -23,7 +23,7 @@ import imageio.v2 as imageio  # noqa: E402
 
 from rl_platform.envs.delay_experiment import make_delay_experiment_env  # noqa: E402
 from rl_platform.visualization.overlay import overlay_hud  # noqa: E402
-from scripts.run_experiment import EVAL_SEED_BASE, LAP_SIGN, env_kwargs, load_algo  # noqa: E402
+from scripts.run_experiment import EVAL_SEED_BASE, env_kwargs, load_algo  # noqa: E402
 
 FPS = 5  # um quadro por decisão (5 Hz) = tempo real
 
@@ -33,7 +33,8 @@ def record(model, meta: dict, delay: int, episode: int, path: Path) -> dict:
     env.unwrapped.config.update({"screen_width": 600, "screen_height": 600})
     obs, _ = env.reset(seed=EVAL_SEED_BASE + episode)
     label = f"{meta['algo'].upper()} {meta['condition']} seed{meta['seed']}"
-    ret = progress = heading = 0.0
+    ret = progress = 0.0
+    laps = 0
     t = 0
     frames = []
     done = False
@@ -44,7 +45,7 @@ def record(model, meta: dict, delay: int, episode: int, path: Path) -> dict:
         t += 1
         ret += float(reward)
         progress += info["progress_m"]
-        heading += info["heading_delta"]
+        laps += info["lap_crossing"]
         status = ""
         if done:
             status = "colisão" if info.get("crashed") else ("saiu da pista" if info.get("off_road") else "100 s completos")
@@ -52,7 +53,7 @@ def record(model, meta: dict, delay: int, episode: int, path: Path) -> dict:
             label,
             f"atraso k = {delay}",
             f"t = {t / 5:5.1f} s   v = {info['speed']:4.1f} m/s",
-            f"progresso = {progress:5.0f} m   voltas = {LAP_SIGN * heading / 6.283185:4.2f}",
+            f"progresso = {progress:5.0f} m   voltas = {laps}",
             f"retorno = {ret:6.1f}",
         ] + ([status] if status else [])
         frames.append(overlay_hud(env.render(), lines))

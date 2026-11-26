@@ -2,7 +2,7 @@
 
 - Recompensa (``ProjectRewardWrapper``)::
 
-      r = lmap(1/(1+4d²) − colisão − 0,3|a_direção| + clip(v/10, 0, 1), [−1, 2] → [0, 1]) × na_pista
+      r = lmap(1/(1+4d²) − colisão − 0,3|a_direção| + clip(v/10, 0, 1), [−1,3, 2] → [0, 1]) × na_pista
 
   A penalidade de ação usa só a direção da ação *executada* (a que chega ao
   veículo depois do atraso), como na recompensa nativa.
@@ -14,8 +14,9 @@
   Na avaliação, ``k`` é fixo durante o episódio.
 
 O ``info`` de cada passo carrega ``delay_k`` (atraso efetivo), ``progress_m``
-(avanço ao longo da faixa, em metros), ``heading_delta`` (para contar voltas)
-e ``off_road``.
+(avanço ao longo da faixa, em metros), ``lap_crossing`` (+1 ao cruzar a linha
+de largada no sentido da prova, −1 no sentido contrário, 0 caso contrário) e
+``off_road``.
 """
 from __future__ import annotations
 
@@ -34,11 +35,17 @@ MAX_EVAL_DELAY = 6
 DEFAULT_TRAIN_MAX_DELAY = 3
 ENV_ID = "racetrack-oval-v1"
 STEERING_PENALTY = 0.3
-REWARD_RANGE = (-1.0, 2.0)
+COLLISION_PENALTY = 1.0
+# Faixa de raw derivada dos coeficientes (lmap do highway-env não clipa):
+#   mínimo = 0 (centralização) − colisão − penalidade de direção máxima + 0 (parado) = −1,3
+#   máximo = 1 (centralizado) − 0 − 0 + 1 (velocidade no limite)                    =  2,0
+# Com o [−1, 2] do CLAUDE.md original, bater devagar esterçando forte dava recompensa < 0.
+REWARD_RANGE = (-COLLISION_PENALTY - STEERING_PENALTY, 2.0)
 
-
-def _wrap_angle(x: float) -> float:
-    return float((x + np.pi) % (2 * np.pi) - np.pi)
+# Linha de largada: início da reta a→b do oval (x = 0), que cruza as 3 faixas
+# (centros em y = 0, 5, 10). Nenhum outro trecho da pista passa por essa faixa de y.
+START_LINE_X = 0.0
+START_LINE_Y = (-5.0, 15.0)
 
 
 class ProjectRewardWrapper(gym.Wrapper):
@@ -46,12 +53,24 @@ class ProjectRewardWrapper(gym.Wrapper):
 
     def __init__(self, env: gym.Env):
         super().__init__(env)
-        self._prev_heading = 0.0
+        self._prev_xy = np.zeros(2)
 
     def reset(self, **kwargs):
         obs, info = self.env.reset(**kwargs)
-        self._prev_heading = float(self.unwrapped.vehicle.heading)
+        self._prev_xy = np.array(self.unwrapped.vehicle.position, dtype=float)
         return obs, info
+
+    def _lap_crossing(self, xy: np.ndarray) -> int:
+        """+1 ao cruzar x = 0 para a frente (sentido a→b) dentro da faixa da
+        reta; −1 ao cruzar para trás; 0 caso contrário."""
+        y_ok = START_LINE_Y[0] <= xy[1] <= START_LINE_Y[1] and START_LINE_Y[0] <= self._prev_xy[1] <= START_LINE_Y[1]
+        if not y_ok:
+            return 0
+        if self._prev_xy[0] < START_LINE_X <= xy[0]:
+            return 1
+        if xy[0] < START_LINE_X <= self._prev_xy[0]:
+            return -1
+        return 0
 
     def step(self, action):
         obs, _native_reward, terminated, truncated, info = self.env.step(action)
@@ -66,20 +85,20 @@ class ProjectRewardWrapper(gym.Wrapper):
 
         raw = (
             1.0 / (1.0 + base.config["lane_centering_cost"] * lateral ** 2)
-            - float(crashed)
-            - STEERING_PENALTY * abs(steering)
+            - COLLISION_PENALTY * float(crashed)
+            - STEERING_PENALTY * min(abs(steering), 1.0)
             + float(np.clip(speed / base.config["speed_limit"], 0.0, 1.0))
         )
         reward = float(utils.lmap(raw, list(REWARD_RANGE), [0.0, 1.0])) * float(on_road)
 
         dt = 1.0 / base.config["policy_frequency"]
-        heading = float(vehicle.heading)
+        xy = np.array(vehicle.position, dtype=float)
         info = dict(info)
-        info["progress_m"] = speed * dt * float(np.cos(heading - lane.heading_at(s)))
-        info["heading_delta"] = _wrap_angle(heading - self._prev_heading)
+        info["progress_m"] = speed * dt * float(np.cos(float(vehicle.heading) - lane.heading_at(s)))
+        info["lap_crossing"] = self._lap_crossing(xy)
         info["off_road"] = not on_road
         info["reward_raw"] = raw
-        self._prev_heading = heading
+        self._prev_xy = xy
         return obs, reward, terminated, truncated, info
 
 

@@ -6,8 +6,10 @@ avaliação passam por `scripts/run_experiment.py`, que usa o ambiente de
 
 ## Jobs
 
-Submetidos juntos por `pcad/submeter.sh`, na fila `draco` (2 × Xeon E5-2640 v2,
-16 núcleos / 32 threads, 64 GB por nó; um nó inteiro por job).
+Submetidos juntos por `pcad/submeter.sh`, na fila `shared` (a fila `draco` exige
+grupo que a conta não tem). Nós da `shared`: draco1–7 (2 × Xeon E5-2640 v2, 16
+núcleos / 32 threads, 64 GB) e bali2 (32 CPUs, 32 GB). Experimento 1 pede 32 CPUs
+e 28 GB; experimento 2, 20 CPUs e 28 GB.
 
 | Job | Script | O que roda | Duração estimada* |
 |---|---|---|---|
@@ -40,7 +42,7 @@ Atraso aleatório: `k_sorteado ~ U{0..3}` a cada passo,
 | Reta | 30 m |
 | Duração do episódio | 100 s (até 500 passos de 0,2 s) |
 | Tráfego | `medium` (`other_vehicles=5`: 1 carro à frente + U{0..4} aleatórios) |
-| Recompensa | `lmap(1/(1+4d²) − colisão − 0,3·\|a_direção\| + clip(v/10,0,1), [−1,2]→[0,1]) × na_pista` |
+| Recompensa | `lmap(1/(1+4d²) − colisão − 0,3·\|a_direção\| + clip(v/10,0,1), [−1,3, 2]→[0,1]) × na_pista (faixa derivada dos coeficientes; sempre em [0, 1])` |
 | Observação | grade de ocupação 2×12×12 + v/10 + últimas 6 ações emitidas + k/6 (296 dims só direção, 302 com aceleração; igual com e sem atraso) |
 | Algoritmos | SAC e PPO do Stable-Baselines3 2.9.2, hiperparâmetros padrão, `MlpPolicy`, CPU, 1 thread |
 | Passos de treino | 300 000 (ajustável com `TIMESTEPS`; o piloto estabilizou antes de 100 000) |
@@ -50,7 +52,7 @@ Atraso aleatório: `k_sorteado ~ U{0..3}` a cada passo,
 
 - **Durante o treino:** a cada 50 000 passos, 10 episódios com k=0 (seeds 500 000+), o que gera a curva de aprendizado.
 - **Final:** k fixo ∈ {0, 1, 2, 3, 4, 5, 6} (4–6 não vistos no treino), 100 episódios por k, política determinística, seeds 1 000 000 a 1 000 099 (diferentes das de treino).
-- **Métricas por episódio:** retorno, duração, chegou aos 100 s, colisão, saída de pista, progresso ao longo da pista (m), voltas (1 volta ≈ 298 m), volta completa, velocidade média.
+- **Métricas por episódio:** retorno, duração, chegou aos 100 s, colisão, saída de pista, progresso ao longo da pista (m), voltas (cruzamentos da linha de largada no início da reta a→b, para a frente menos para trás; 1 volta ≈ 300 m), volta completa (≥ 1 cruzamento), velocidade média. Reporte o progresso junto do retorno: parado no centro da faixa o carro acumula ~350 de retorno em 100 s e 0 m.
 
 ## Saída (em `~/RL/results/exp/<algo>_<condição>_seed<s>/`)
 
@@ -62,6 +64,8 @@ Atraso aleatório: `k_sorteado ~ U{0..3}` a cada passo,
 | `learning_curve.csv` | avaliações periódicas (k=0) |
 | `eval_episodes.csv` | avaliação final, um registro por (k, episódio) |
 | `eval_summary.csv` | médias por k |
+
+Retomada: `run_experiment.py run` pula o que está completo (confere metadados, os 7 atrasos e o nº de episódios), só avalia modelos prontos e recusa (código 3) pastas de outra configuração; os arquivos finais são gravados de forma atômica. O job termina com código 1 se algum treino falhar. O `meta.json` registra os passos realmente executados (o PPO arredonda para múltiplos de 2048).
 
 Logs de cada treino: `~/RL/results/logs/<algo>_<condição>_seed<s>.log`.
 
