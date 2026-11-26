@@ -10,6 +10,24 @@ live window. Example:
         --checkpoint results/checkpoints/sac_racetrack_traffic-medium_seed0_final.pt \
         --traffic heavy --episodes 2 --out results/videos/sac_heavy.mp4
 
+For a PPO checkpoint (trained via --agent ppo, see scripts/train.py), pass
+--agent ppo and the matching `.zip` checkpoint (stable-baselines3's own save
+format, not our `.pt` state_dict -- the two agents' `agent.load()` each know
+how to read their own):
+
+    SDL_VIDEODRIVER=dummy python scripts/record.py \
+        --agent ppo \
+        --checkpoint results/checkpoints/ppo_racetrack_traffic-medium_seed0_final.zip \
+        --traffic heavy --episodes 2 --out results/videos/ppo_heavy.mp4
+
+Same for --agent sac_sb3 (SAC via stable-baselines3, a second implementation
+of SAC alongside our from-scratch one) -- also a `.zip` checkpoint:
+
+    SDL_VIDEODRIVER=dummy python scripts/record.py \
+        --agent sac_sb3 \
+        --checkpoint results/checkpoints/sac_sb3_racetrack_traffic-medium_seed0_final.zip \
+        --traffic heavy --episodes 2 --out results/videos/sac_sb3_heavy.mp4
+
 IMPORTANT: if the checkpoint was trained with non-default env knobs that
 change the observation size -- right now that's only --enable-delay-wrapper
 -- this script must be given the SAME ones, or the checkpoint won't load (its

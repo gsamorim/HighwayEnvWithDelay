@@ -8,3 +8,4 @@ matplotlib
 imageio
 imageio-ffmpeg
 pytest
+stable-baselines3>=2.0  # only needed for --agent ppo / --agent sac_sb3; --agent sac/random work without it

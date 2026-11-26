@@ -36,17 +36,21 @@
                                 // axis for this project (pendencia em aberto
                                 // -- see project doc); default 3 if unset.
   "oval_obstacle_preset": null, // null | "block_lane" | "force_decision"
-  // Target spawn clearance (meters) from obstacles and other vehicles.
-  // null uses SafeSpawnWrapper's default (15.0). On a short or crowded
-  // lane the wrapper may only be able to reach part of this clearance.
+  // Safety margin (meters) SafeSpawnWrapper enforces between the spawn and
+  // any oval obstacle above -- only matters when oval_obstacle_preset is
+  // set. null = wrapper's own default (15.0). Confirmed empirically that
+  // WITHOUT this, "block_lane" + length=80 could spawn the car ~5m from an
+  // obstacle (unavoidable collision unrelated to policy quality) -- see
+  // SafeSpawnWrapper's docstring and project doc section 12.
   "obstacle_min_clearance_m": null,
 
   // --- 3) Acceleration control ---------------------------------------------
   // On by default (RacetrackEnvConfig.action_longitudinal=True). Set to
-  // false for steering-only control: the car starts at speed_limit and
-  // holds that speed during normal driving with zero acceleration. This
-  // shrinks the action vector and, with the delay wrapper, the observation.
-  // Use the same mode for training and recording.
+  // false to disable it (agent then only controls steering; acceleration
+  // is held at 0 every step -- NOT auto-piloted to a target speed). Changes
+  // the action vector from 2 dims to 1, which also changes obs_dim if
+  // enable_delay_wrapper is on -- must match between a training run and
+  // anything loading its checkpoint.
   "action_longitudinal": null,
 
   // --- 5) Obstacles --------------------------------------------------------
@@ -57,7 +61,7 @@
   // hardcoded offset from the end of the straight, same root bug class as
   // the spawn fix (section 9 of the project doc): it doesn't scale
   // meaningfully to a short straight (e.g. length=5 makes both presets a
-  // no-op). The clearance setting adjusts the vehicle's spawn.
+  // no-op), it just no longer forces an unfair collision.
 
   // --- 4) Traffic speed (ours; not a native highway-env key) ---------------
   "traffic_speed_min": null,   // null (both null) disables the wrapper -> native spawn speed
@@ -65,6 +69,36 @@
 
   // --- 6) Traffic intensity (native `other_vehicles`, via named presets) ---
   "traffic": "medium",         // "none" | "light" | "medium" | "heavy" | "jam", or an int
+
+  // --- Agent selection + PPO (via stable-baselines3) -----------------------
+  // null = train.py default ("sac", our from-scratch implementation). Set to
+  // "ppo" to train with stable-baselines3's own PPO instead -- real training
+  // then goes through SB3's `.learn()` loop (scripts/train.py::
+  // train_sb3_ppo), not our off-policy Trainer; see
+  // rl_platform/agents/ppo_sb3.py for why. Checkpoints are SB3's own `.zip`
+  // format in that case, not our `.pt` state_dict -- scripts/record.py loads
+  // either, matched by file extension.
+  "agent": null,
+  "ppo_n_steps": null,              // null = 2048 (SB3 default): rollout length per update
+  "ppo_n_epochs": null,             // null = 10 (SB3 default): minibatch epochs per rollout
+  "ppo_learning_rate": null,        // null = 3e-4
+  "ppo_gamma": null,                // null = 0.99
+  "ppo_gae_lambda": null,           // null = 0.95
+  "ppo_clip_range": null,           // null = 0.2
+  "ppo_ent_coef": null,             // null = 0.0
+  "ppo_vf_coef": null,              // null = 0.5
+
+  // "agent": "sac_sb3" -- SAC via stable-baselines3 (second implementation
+  // of the same algorithm as "sac", for comparison against our
+  // from-scratch one). buffer_size/batch_size/learning_starts above are
+  // shared with "sac" (same meaning for both); these are SB3-SAC-only:
+  "sac_sb3_learning_rate": null,          // null = 3e-4
+  "sac_sb3_gamma": null,                  // null = 0.99
+  "sac_sb3_tau": null,                    // null = 0.005 (SB3 default)
+  "sac_sb3_train_freq": null,             // null = 1 (env steps between updates)
+  "sac_sb3_gradient_steps": null,         // null = 1
+  "sac_sb3_ent_coef": null,               // null = "auto" (autotuned, like our from-scratch SAC)
+  "sac_sb3_target_update_interval": null, // null = 1
 
   // --- Reward shaping (ours; racetrack has no native speed term) -----------
   "high_speed_reward": null,          // null = train.py default (0.4)

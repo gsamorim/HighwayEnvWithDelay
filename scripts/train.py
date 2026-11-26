@@ -14,12 +14,13 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from rl_platform.envs import make_env, available_envs
 from rl_platform.agents import make_agent, available_agents
-from rl_platform.training import Trainer, TrainerConfig
+from rl_platform.training import Trainer, TrainerConfig, RunLogger
 from rl_platform.training.plotting import plot_training_curves
 from rl_platform.config_loader import load_jsonc, experiment_config_to_arg_defaults
 from rl_platform.cli_common import add_env_cli_args, env_kwargs_from_args, traffic_arg
@@ -58,8 +59,219 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--speed-reward-steepness-frac", type=float, default=0.3,
                     help="(tanh shape only) rise steepness as a fraction of speed_limit")
 
+    # PPO-only knobs (--agent ppo): forwarded to stable-baselines3's own PPO
+    # constructor (see rl_platform/agents/ppo_sb3.py::SB3_PPO_KWARGS).
+    # Ignored, with no error, when --agent sac/random -- so a single
+    # .jsonc/CLI invocation can switch --agent without editing these.
+    p.add_argument("--ppo-n-steps", type=int, default=2048,
+                    help="rollout length collected before each PPO update (SB3 default: 2048)")
+    p.add_argument("--ppo-n-epochs", type=int, default=10,
+                    help="minibatch epochs per rollout (SB3 default: 10)")
+    p.add_argument("--ppo-learning-rate", type=float, default=3e-4)
+    p.add_argument("--ppo-gamma", type=float, default=0.99)
+    p.add_argument("--ppo-gae-lambda", type=float, default=0.95)
+    p.add_argument("--ppo-clip-range", type=float, default=0.2)
+    p.add_argument("--ppo-ent-coef", type=float, default=0.0)
+    p.add_argument("--ppo-vf-coef", type=float, default=0.5)
+
+    # SAC-via-SB3-only knobs (--agent sac_sb3): forwarded to
+    # stable-baselines3's own SAC constructor (see
+    # rl_platform/agents/sac_sb3.py::SB3_SAC_KWARGS). Ignored, with no
+    # error, when --agent sac/random/ppo. --buffer-size/--batch-size/
+    # --learning-starts above are SHARED with our from-scratch SAC (same
+    # meaning for both), so they are not repeated here.
+    p.add_argument("--sac-sb3-learning-rate", type=float, default=3e-4)
+    p.add_argument("--sac-sb3-gamma", type=float, default=0.99)
+    p.add_argument("--sac-sb3-tau", type=float, default=0.005,
+                    help="target-network Polyak averaging rate (SB3 default: 0.005)")
+    p.add_argument("--sac-sb3-train-freq", type=int, default=1,
+                    help="env steps between gradient updates (SB3 default: 1)")
+    p.add_argument("--sac-sb3-gradient-steps", type=int, default=1,
+                    help="gradient updates per train_freq interval (SB3 default: 1)")
+    p.add_argument("--sac-sb3-ent-coef", default="auto",
+                    help='"auto" (default, SB3 autotunes it like our from-scratch SAC does), '
+                         '"auto_<value>" (custom init), or a fixed float')
+    p.add_argument("--sac-sb3-target-update-interval", type=int, default=1)
+
     add_env_cli_args(p)
     return p
+
+
+def train_sb3(args, env_factory, run_name: str, algo: str) -> str:
+    """Real training for either stable-baselines3-backed agent (`algo` is
+    "ppo" or "sac_sb3"), via SB3's own `.learn()` loop -- NOT through
+    `rl_platform.training.Trainer`. For "ppo" that's because the Trainer's
+    loop is off-policy-only by design (see `rl_platform/agents/ppo_sb3.py`'s
+    module docstring). For "sac_sb3" -- despite SAC itself being
+    off-policy -- it's because SB3's `SAC` doesn't expose its replay
+    buffer/gradient-step cadence as something meant to be driven externally
+    per env step (see `rl_platform/agents/sac_sb3.py`'s module docstring);
+    `.learn()` is SB3's intended entry point for both algorithms, which is
+    exactly why one function here can drive either.
+
+    Writes a CSV log in the same schema `Trainer` writes (so
+    `plot_training_curves` works unmodified on either SB3-backed run) and a
+    `.zip` checkpoint (SB3's own save format, not our `.pt` state_dict
+    format -- `scripts/record.py` tells them apart by extension).
+    Returns the final checkpoint path.
+    """
+    try:
+        from stable_baselines3.common.vec_env import DummyVecEnv
+        from stable_baselines3.common.callbacks import BaseCallback
+        from stable_baselines3.common.monitor import Monitor
+    except ImportError as e:
+        raise ImportError(
+            f"--agent {algo} needs stable-baselines3, which isn't installed "
+            "in this Python environment. Install it with:\n"
+            "    pip install stable-baselines3\n"
+            "(it's listed in requirements.txt). --agent sac/random don't "
+            "need it and are unaffected."
+        ) from e
+
+    os.makedirs(args.checkpoint_dir, exist_ok=True)
+    logger = RunLogger(args.log_dir, run_name)
+    logger.log_meta(
+        {
+            "env": args.env,
+            "agent": algo,
+            "traffic": args.traffic,
+            "args": vars(args),
+        }
+    )
+
+    class _LogAndCheckpointCallback(BaseCallback):
+        """Logs one CSV row per finished episode (matching `Trainer`'s
+        column schema: step/episode/episode_return/episode_len/crashed/
+        mean_speed) and periodically evaluates + checkpoints, mirroring
+        `Trainer.train()`'s cadence/console-output so a PPO run's console
+        and CSV look the same shape as a SAC run's."""
+
+        def __init__(self):
+            super().__init__(verbose=0)
+            self.episode_idx = 0
+            self._next_eval_at = args.eval_every_steps
+            self._next_ckpt_at = args.checkpoint_every_steps
+            self._t_start = time.time()
+
+        def _on_step(self) -> bool:
+            # VecEnv with a single sub-env: index 0 throughout.
+            infos = self.locals.get("infos", [{}])
+            dones = self.locals.get("dones", [False])
+            if dones[0]:
+                info = infos[0]
+                ep_info = info.get("episode", {})
+                row = {
+                    "step": self.num_timesteps,
+                    "episode": self.episode_idx,
+                    "episode_return": round(float(ep_info.get("r", float("nan"))), 4),
+                    "episode_len": int(ep_info.get("l", 0)),
+                    "crashed": int(bool(info.get("crashed", False))),
+                    "mean_speed": float(info.get("speed", float("nan"))),
+                }
+                logger.log_row(row)
+                self.episode_idx += 1
+
+            if self.num_timesteps >= self._next_eval_at:
+                self._next_eval_at += args.eval_every_steps
+                eval_stats = self._evaluate(args.eval_episodes, seed=10_000 + self.num_timesteps)
+                eval_stats["step"] = self.num_timesteps
+                eval_stats["wall_time_s"] = round(time.time() - self._t_start, 1)
+                print(
+                    f"[eval @ step {self.num_timesteps:>7d}] "
+                    f"return={eval_stats['mean_return']:.2f}+/-{eval_stats['std_return']:.2f} "
+                    f"crash_rate={eval_stats['crash_rate']:.2f} "
+                    f"mean_speed={eval_stats['mean_speed']:.2f} "
+                    f"({eval_stats['wall_time_s']:.0f}s elapsed)"
+                )
+
+            if self.num_timesteps >= self._next_ckpt_at:
+                self._next_ckpt_at += args.checkpoint_every_steps
+                ckpt_path = os.path.join(args.checkpoint_dir, f"{run_name}_step{self.num_timesteps}.zip")
+                self.model.save(ckpt_path)
+
+            return True
+
+        def _evaluate(self, n_episodes: int, seed: int):
+            import numpy as np
+
+            eval_env = env_factory()
+            returns, crashes, speeds = [], [], []
+            for ep in range(n_episodes):
+                obs, info = eval_env.reset(seed=seed + ep)
+                done = False
+                ep_return, ep_speeds, crashed = 0.0, [], False
+                while not done:
+                    action, _ = self.model.predict(obs, deterministic=True)
+                    obs, reward, terminated, truncated, info = eval_env.step(action)
+                    done = terminated or truncated
+                    ep_return += float(reward)
+                    crashed = crashed or bool(info.get("crashed", False))
+                    if "speed" in info:
+                        ep_speeds.append(float(info["speed"]))
+                returns.append(ep_return)
+                crashes.append(float(crashed))
+                speeds.append(float(np.mean(ep_speeds)) if ep_speeds else float("nan"))
+            eval_env.close()
+            return {
+                "mean_return": float(np.mean(returns)),
+                "std_return": float(np.std(returns)),
+                "crash_rate": float(np.mean(crashes)),
+                "mean_speed": float(np.nanmean(speeds)),
+            }
+
+    # SB3's Monitor wrapper is what populates info["episode"] = {"r", "l", "t"}
+    # on the terminal step -- that's what the callback reads to log a CSV row
+    # per finished episode; our env's own "crashed"/"speed" info keys survive
+    # alongside it since Monitor only adds a key, it doesn't replace info.
+    vec_env = DummyVecEnv([lambda: Monitor(env_factory())])
+
+    if algo == "ppo":
+        from stable_baselines3 import PPO as SB3Algo
+        model = SB3Algo(
+            "MlpPolicy",
+            vec_env,
+            seed=args.seed,
+            verbose=0,
+            n_steps=args.ppo_n_steps,
+            batch_size=args.batch_size,
+            n_epochs=args.ppo_n_epochs,
+            learning_rate=args.ppo_learning_rate,
+            gamma=args.ppo_gamma,
+            gae_lambda=args.ppo_gae_lambda,
+            clip_range=args.ppo_clip_range,
+            ent_coef=args.ppo_ent_coef,
+            vf_coef=args.ppo_vf_coef,
+        )
+    elif algo == "sac_sb3":
+        from stable_baselines3 import SAC as SB3Algo
+        from rl_platform.agents.sac_sb3 import coerce_ent_coef
+        model = SB3Algo(
+            "MlpPolicy",
+            vec_env,
+            seed=args.seed,
+            verbose=0,
+            buffer_size=args.buffer_size,
+            batch_size=args.batch_size,
+            learning_starts=args.learning_starts,
+            learning_rate=args.sac_sb3_learning_rate,
+            gamma=args.sac_sb3_gamma,
+            tau=args.sac_sb3_tau,
+            train_freq=args.sac_sb3_train_freq,
+            gradient_steps=args.sac_sb3_gradient_steps,
+            ent_coef=coerce_ent_coef(args.sac_sb3_ent_coef),
+            target_update_interval=args.sac_sb3_target_update_interval,
+        )
+    else:
+        raise ValueError(f"train_sb3() does not know algo '{algo}' (expected 'ppo' or 'sac_sb3')")
+
+    print(f"Training {algo} (stable-baselines3) on {args.env} (traffic={args.traffic}) for {args.total_steps} steps ...")
+    model.learn(total_timesteps=args.total_steps, callback=_LogAndCheckpointCallback())
+
+    final_ckpt = os.path.join(args.checkpoint_dir, f"{run_name}_final.zip")
+    model.save(final_ckpt)
+    logger.close()
+    vec_env.close()
+    return final_ckpt
 
 
 def main(argv=None):
@@ -100,42 +312,51 @@ def main(argv=None):
     act_dim = probe_env.action_space.shape[0]
     probe_env.close()
 
-    agent = make_agent(
-        args.agent,
-        obs_dim=obs_dim,
-        act_dim=act_dim,
-        buffer_size=args.buffer_size,
-        batch_size=args.batch_size,
-        updates_per_step=args.updates_per_step,
-        learning_starts=args.learning_starts,
-        seed=args.seed,
-    )
+    if args.agent in ("ppo", "sac_sb3"):
+        # Real training for either SB3-backed agent goes through SB3's own
+        # `.learn()` loop, not the generic off-policy `Trainer` below -- see
+        # rl_platform/agents/ppo_sb3.py / sac_sb3.py and train_sb3()'s own
+        # docstring for why. `final_ckpt` is a `.zip` (SB3's save format),
+        # not `.pt`.
+        final_ckpt = train_sb3(args, env_factory, run_name, algo=args.agent)
+    else:
+        agent = make_agent(
+            args.agent,
+            obs_dim=obs_dim,
+            act_dim=act_dim,
+            buffer_size=args.buffer_size,
+            batch_size=args.batch_size,
+            updates_per_step=args.updates_per_step,
+            learning_starts=args.learning_starts,
+            seed=args.seed,
+        )
 
-    trainer_cfg = TrainerConfig(
-        total_steps=args.total_steps,
-        start_steps=args.start_steps,
-        eval_every_steps=args.eval_every_steps,
-        eval_episodes=args.eval_episodes,
-        checkpoint_every_steps=args.checkpoint_every_steps,
-        log_dir=args.log_dir,
-        checkpoint_dir=args.checkpoint_dir,
-        run_name=run_name,
-        seed=args.seed,
-    )
-    trainer = Trainer(env_factory, agent, trainer_cfg)
-    trainer.logger.log_meta(
-        {
-            "env": args.env,
-            "agent": args.agent,
-            "traffic": args.traffic,
-            "obs_dim": obs_dim,
-            "act_dim": act_dim,
-            "args": vars(args),
-        }
-    )
+        trainer_cfg = TrainerConfig(
+            total_steps=args.total_steps,
+            start_steps=args.start_steps,
+            eval_every_steps=args.eval_every_steps,
+            eval_episodes=args.eval_episodes,
+            checkpoint_every_steps=args.checkpoint_every_steps,
+            log_dir=args.log_dir,
+            checkpoint_dir=args.checkpoint_dir,
+            run_name=run_name,
+            seed=args.seed,
+        )
+        trainer = Trainer(env_factory, agent, trainer_cfg)
+        trainer.logger.log_meta(
+            {
+                "env": args.env,
+                "agent": args.agent,
+                "traffic": args.traffic,
+                "obs_dim": obs_dim,
+                "act_dim": act_dim,
+                "args": vars(args),
+            }
+        )
 
-    print(f"Training {args.agent} on {args.env} (traffic={args.traffic}) for {args.total_steps} steps ...")
-    trainer.train()
+        print(f"Training {args.agent} on {args.env} (traffic={args.traffic}) for {args.total_steps} steps ...")
+        trainer.train()
+        final_ckpt = os.path.join(args.checkpoint_dir, run_name + "_final.pt")
 
     os.makedirs(args.plot_dir, exist_ok=True)
     csv_path = os.path.join(args.log_dir, f"{run_name}.csv")
@@ -147,7 +368,7 @@ def main(argv=None):
         print(f"Plotting failed: {e}")
 
     print(f"Done. Logs: {csv_path}")
-    print(f"Final checkpoint: {os.path.join(args.checkpoint_dir, run_name + '_final.pt')}")
+    print(f"Final checkpoint: {final_ckpt}")
 
 
 if __name__ == "__main__":

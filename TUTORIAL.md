@@ -58,7 +58,7 @@ foreach ($reta in $retas) {
 Invoke-Item "$saida/videos"
 ```
 
-Cole o bloco completo uma vez. Primeiro rodam os três treinos. Depois o bloco grava as três pistas automaticamente e abre a pasta de vídeos. Quando o prompt `PS ...>` voltar, o terminal está pronto para outro comando. As seções 3 a 6 mostram onde fica cada parte do bloco.
+Cole o bloco completo uma vez. Primeiro rodam os três treinos. Depois o bloco grava as três pistas automaticamente e abre a pasta de vídeos. Quando o prompt `PS ...>` voltar, o terminal está pronto para outro comando. As seções 3 a 6 mostram onde fica cada parte do bloco. Este exemplo usa `--agent sac` (o SAC implementado do zero neste projeto); a seção 7 lista os outros três agentes disponíveis e como trocar.
 
 ## 3. Primeiras quatro linhas do exemplo
 
@@ -103,7 +103,7 @@ O `SafeSpawnWrapper` corrige largadas fora da faixa e procura uma posição afas
 
 | Linha atual no JSONC | Exemplo de substituição | O que muda |
 | --- | --- | --- |
-| `"action_longitudinal": null,` | `"action_longitudinal": false,` | Com `null` ou `true`, o SAC controla aceleração e direção. Com `false`, controla apenas a direção e o carro larga e segue a `speed_limit` durante a condução normal (10 m/s neste exemplo). |
+| `"action_longitudinal": null,` | `"action_longitudinal": false,` | Com `null` ou `true`, o agente controla aceleração e direção. Com `false`, controla apenas a direção e o carro larga e segue a `speed_limit` durante a condução normal (10 m/s neste exemplo). |
 
 Pelo PowerShell, acrescente `--no-action-longitudinal` à linha que começa com `& $python scripts/train.py --config $config --agent sac --seed 0`, antes do acento grave final. Repita a opção na linha que começa com `& $python scripts/record.py --config $config --agent sac`. Use `--action-longitudinal` para ativar a aceleração explicitamente.
 
@@ -113,7 +113,7 @@ Esse ajuste muda a ação de dois valores para um e também muda o tamanho da ob
 
 | Linha atual no JSONC | Exemplo de substituição | O que muda |
 | --- | --- | --- |
-| `"enable_delay_wrapper": true,` | `"enable_delay_wrapper": false,` | Desliga a simulação de atraso e retira da observação o histórico de ações, a fila, os tempos restantes e a última ação aplicada. Isso muda o formato de entrada do modelo. |
+| `"enable_delay_wrapper": true,` | `"enable_delay_wrapper": false,` | Desliga a simulação de atraso e retira da observação o histórico de ações, a fila, os tempos restantes e a última ação aplicada. Isso muda o formato de entrada do modelo. **É o toggle do "estado aumentado" citado na seção 7 — funciona do mesmo jeito para qualquer um dos quatro agentes.** |
 | `"action_delay_min_steps": 0,` | `"action_delay_min_steps": 2,` | Com o máximo original em 3, passa a sortear atrasos de 2 a 3 passos por comando. |
 | `"action_delay_max_steps": 3,` | `"action_delay_max_steps": 6,` | Com o mínimo original em 0, amplia a faixa para 0 a 6 passos. Use mínimo menor ou igual ao máximo, com os dois entre 0 e 6. Valores iguais dão atraso fixo. |
 | `"delay_known_to_agent": true,` | `"delay_known_to_agent": false,` | Zera os tempos restantes mostrados ao agente. O atraso e o formato de entrada continuam ativos. |
@@ -173,13 +173,13 @@ O laço executa `scripts/train.py` uma vez por reta, com um agente novo a cada r
 
 | Trecho atual no PowerShell | Exemplo de substituição | O que muda |
 | --- | --- | --- |
-| `--agent sac` | `--agent random` | Usa um agente de referência que toma ações aleatórias. Para gravar essa referência, use `--agent random` nos dois comandos e retire `--checkpoint` com seu caminho do gravador, pois o agente aleatório não salva pesos. |
+| `--agent sac` | `--agent random` | Usa um agente de referência que toma ações aleatórias. Para gravar essa referência, use `--agent random` nos dois comandos e retire `--checkpoint` com seu caminho do gravador, pois o agente aleatório não salva pesos. A seção 7 lista os outros dois agentes (`ppo`, `sac_sb3`) e o detalhe do checkpoint `.zip` deles. |
 | `--seed 0` | `--seed 1` | Muda a semente de inicialização do SAC, do primeiro reset e do sorteio dos atrasos. A opção prevalece sobre `"seed": 0,` no JSONC durante o treino. |
 | `$nome = "oval${reta}m"` | `$nome = "teste_oval${reta}m"` | `--run-name $nome` usa esse nome, por exemplo `teste_oval80m`. O comando prevalece sobre `"run_name": null,` no JSONC. Faça a mesma troca no laço de gravação para encontrar os arquivos. |
 | `--total-steps $passos` | Mantenha o trecho e troque `$passos = 5000` por `$passos = 2500` nas primeiras quatro linhas. | Reduz a quantidade de passos por treino mantendo a avaliação no último passo. O PowerShell prevalece sobre `"total_steps": 50000,` no JSONC. |
 | `--start-steps 300` | `--start-steps 600` | Usa ações aleatórias nos primeiros 600 passos em vez de 300. |
 | `--learning-starts 300` | `--learning-starts 600` | Exige pelo menos 600 transições guardadas para o SAC atualizar a rede. A atualização também depende de terminar a exploração inicial e ter dados suficientes para o lote. |
-| `--checkpoint-every-steps $passos` | `--checkpoint-every-steps 2500` | Salva um checkpoint periódico a cada 2.500 passos. O treinador grava também o modelo `_final.pt` ao terminar. |
+| `--checkpoint-every-steps $passos` | `--checkpoint-every-steps 2500` | Salva um checkpoint periódico a cada 2.500 passos. O treinador grava também o modelo `_final.pt` ao terminar (`_final.zip` para `--agent ppo`/`--agent sac_sb3` — ver seção 7). |
 
 A última linha do comando de treino define as subpastas. Se quiser mover todos os resultados juntos, prefira mudar `$saida` no início do exemplo.
 
@@ -245,9 +245,147 @@ Para cada reta, `scripts/record.py` carrega o checkpoint `_final.pt` corresponde
 | --- | --- | --- |
 | `--config $config` e `--agent sac` | Para trocar o arquivo, mude `$config = ...` nas primeiras quatro linhas. Para trocar o agente, use o mesmo valor de `--agent` no treino e na gravação. | Recria o ambiente e o tipo de agente de cada treino. Ajustes de pista, tráfego e atraso feitos no JSONC já são lidos pelos dois comandos. |
 | `--oval-straight-length-m $reta` | Para testar outros comprimentos, mude `$retas = ...` no início do bloco. | Grava cada modelo na mesma geometria usada no seu treino. |
-| `--checkpoint "$saida/checkpoints/${nome}_final.pt"` | Troque por `--checkpoint "$saida/checkpoints/${nome}_step5000.pt"` para usar o checkpoint periódico, se gerado. | Muda o arquivo de pesos carregado. |
+| `--checkpoint "$saida/checkpoints/${nome}_final.pt"` | Troque por `--checkpoint "$saida/checkpoints/${nome}_step5000.pt"` para usar o checkpoint periódico, se gerado. | Muda o arquivo de pesos carregado. Com `--agent ppo`/`--agent sac_sb3` a extensão é `.zip`, não `.pt` (seção 7). |
 | `--episodes 3` | `--episodes 1` | Grava um episódio por pista. Esse valor é independente de `--eval-episodes 2` no treino. |
 | `$video = "$saida/videos/$nome.mp4"` | `$video = "$saida/videos/demo_$nome.mp4"` | Acrescenta `demo_` a cada nome de vídeo. `$nome` identifica a pista no arquivo. |
 | `--episodes 3 --out $video` | `--episodes 3 --out $video --seed 123 --fps 10 --gif` | Começa pela semente 123, salva o MP4 a 10 quadros por segundo em vez de 15 e grava também um GIF. |
 
 O gravador renderiza em segundo plano. A última linha abre a pasta dos MP4s. Se aparecer `size mismatch` ao carregar o modelo, confira `enable_delay_wrapper` e `action_longitudinal`. Treino e gravação precisam usar os mesmos formatos de observação e ação.
+
+## 7. Os quatro agentes e as sete combinações (random, SAC×2, PPO, × estado aumentado)
+
+Além do SAC caseiro usado no exemplo das seções 2 a 6, o projeto tem mais três agentes selecionáveis por `--agent` (ou pela chave `"agent"` do JSONC): um agente de referência que não aprende, e duas implementações que usam a biblioteca **stable-baselines3 (SB3)** em vez de código próprio.
+
+| `--agent` | O que é | Checkpoint |
+| --- | --- | --- |
+| `sac` (padrão) | SAC implementado do zero neste projeto (Haarnoja et al. 2018/2019) — nunca usou SB3, é uma implementação própria num arquivo só. | `_final.pt` |
+| `random` | Agente de referência: toma ações aleatórias, não aprende nada. Não gera checkpoint. | — |
+| `ppo` | PPO via `stable-baselines3` (biblioteca pronta, não reimplementado). | `_final.zip` |
+| `sac_sb3` | SAC via `stable-baselines3` — um segundo SAC, útil para comparar com o `sac` caseiro. | `_final.zip` |
+
+O "estado aumentado" (`"enable_delay_wrapper": true/false` no JSONC, seção 3) é um ajuste do **ambiente**, não do agente: funciona do mesmo jeito para `sac`, `ppo` e `sac_sb3`, sem precisar trocar mais nada. Isso dá sete combinações com sentido prático (o `random` não aprende, então o estado aumentado não muda o que ele faz):
+
+| # | Agente | Estado aumentado | `--agent` |
+| --- | --- | --- | --- |
+| 1 | random | — | `random` |
+| 2 | SAC (caseiro) | não | `sac` |
+| 3 | SAC (caseiro) | sim | `sac` + `"enable_delay_wrapper": true` |
+| 4 | SAC (via SB3) | não | `sac_sb3` |
+| 5 | SAC (via SB3) | sim | `sac_sb3` + `"enable_delay_wrapper": true` |
+| 6 | PPO (via SB3) | não | `ppo` |
+| 7 | PPO (via SB3) | sim | `ppo` + `"enable_delay_wrapper": true` |
+
+### Dependência extra: `stable-baselines3`
+
+`--agent ppo` e `--agent sac_sb3` precisam do pacote `stable-baselines3`, já listado em `requirements.txt` (`pip install -r requirements.txt` da seção 1 já instala). Sem esse pacote instalado, `--agent sac` e `--agent random` continuam funcionando normalmente — só `ppo`/`sac_sb3` dão um erro claro pedindo para instalar o pacote, no momento em que o agente é de fato usado (agir, salvar ou carregar), não ao iniciar o script.
+
+### Como rodar o exemplo da seção 2 com PPO ou com SAC-via-SB3
+
+Troque `--agent sac` por `--agent ppo` ou `--agent sac_sb3` nas DUAS linhas (treino e gravação), e troque a extensão do checkpoint de `.pt` para `.zip` na linha de gravação. Nada mais no bloco da seção 2 precisa mudar.
+
+```powershell
+& $python scripts/train.py --config $config --agent ppo --seed 0 `
+    --oval-straight-length-m $reta --run-name $nome `
+    --total-steps $passos --start-steps 300 --learning-starts 300 `
+    --eval-every-steps $passos --eval-episodes 2 --checkpoint-every-steps $passos `
+    --log-dir "$saida/logs" --plot-dir "$saida/plots" --checkpoint-dir "$saida/checkpoints"
+```
+
+```powershell
+& $python scripts/record.py --config $config --agent ppo `
+    --oval-straight-length-m $reta --checkpoint "$saida/checkpoints/${nome}_final.zip" `
+    --episodes 3 --out $video
+```
+
+Para `--agent sac_sb3`, use exatamente os mesmos dois comandos acima trocando `ppo` por `sac_sb3` — o checkpoint também é `.zip`.
+
+### Hiperparâmetros específicos de cada agente SB3 (opcionais)
+
+PPO e SAC-via-SB3 têm hiperparâmetros próprios, configuráveis por flag de CLI ou pela chave correspondente no JSONC (todas `null` por padrão = usa o padrão do próprio `stable-baselines3`). `--buffer-size`, `--batch-size` e `--learning-starts` (já usados pelo `sac` caseiro) valem também para `sac_sb3`, com o mesmo significado.
+
+| Agente | Flags | Chaves no JSONC |
+| --- | --- | --- |
+| `ppo` | `--ppo-n-steps`, `--ppo-n-epochs`, `--ppo-learning-rate`, `--ppo-gamma`, `--ppo-gae-lambda`, `--ppo-clip-range`, `--ppo-ent-coef`, `--ppo-vf-coef` | `ppo_n_steps`, `ppo_n_epochs`, `ppo_learning_rate`, `ppo_gamma`, `ppo_gae_lambda`, `ppo_clip_range`, `ppo_ent_coef`, `ppo_vf_coef` |
+| `sac_sb3` | `--sac-sb3-learning-rate`, `--sac-sb3-gamma`, `--sac-sb3-tau`, `--sac-sb3-train-freq`, `--sac-sb3-gradient-steps`, `--sac-sb3-ent-coef`, `--sac-sb3-target-update-interval` | `sac_sb3_learning_rate`, `sac_sb3_gamma`, `sac_sb3_tau`, `sac_sb3_train_freq`, `sac_sb3_gradient_steps`, `sac_sb3_ent_coef`, `sac_sb3_target_update_interval` |
+
+PPO e SAC-via-SB3 não usam o mesmo laço de treino do `sac` caseiro — o treino de ambos roda pelo próprio `model.learn()` do `stable-baselines3` (PPO é on-policy e SAC-via-SB3 não expõe seu replay buffer para fora). Na prática isso é transparente: o console imprime `[eval @ step ...]` no mesmo formato, o CSV/PNG de treino têm as mesmas colunas, e `scripts/record.py` carrega qualquer um dos quatro agentes sem diferença de uso — só muda a extensão do arquivo de checkpoint.
+
+## 8. Benchmark de atraso com cinco sementes
+
+Use o PowerShell da seção 1. Este exemplo usa `racetrack-oval-v1`, com **HighwayEnv 1.12.1** como versão de referência. A reta tem 80 m, o tráfego é médio e o agente só controla a direção, com velocidade fixa de 10 m/s durante a condução normal. A duração máxima é **100 s simulados**, ou **500 decisões** a 5 Hz. Colisões ou saídas da pista podem encerrar o episódio antes.
+
+No [script do benchmark](scripts/benchmark_delays.py), `ENV_ID`, `STRAIGHT_LENGTH_M` e `POLICY_HZ` definem a pista, a reta e a frequência. Em `make_benchmark_env()`, `traffic_density="medium"` e `action_longitudinal=False` definem o tráfego e o controle.
+
+### Exemplo completo
+
+```powershell
+$saida = "results/benchmark/atrasos-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+
+& $python scripts/benchmark_delays.py --output-dir $saida --duration 100 `
+    --total-steps 500000 --seeds 0 1 2 3 4 --train-max-delay 3 `
+    --eval-delays 0 1 2 3 4 5 6 --eval-episodes 100
+
+if ($LASTEXITCODE -ne 0) { throw "O benchmark de atraso falhou." }
+```
+
+### Trecho que define o treino
+
+```powershell
+    --total-steps 500000 --seeds 0 1 2 3 4 --train-max-delay 3 `
+```
+
+| Opção do trecho | O que faz |
+| --- | --- |
+| `--total-steps 500000` | Treina cada política por 500.000 passos do ambiente. Esse é o orçamento de uma execução, por variante e por semente. |
+| `--seeds 0 1 2 3 4` | Usa cinco sementes de treino para cada variante. |
+| `--train-max-delay 3` | Treina o SAC de referência **sem atraso** e adiciona o **SAC+atrasos**. Nessa segunda variante, cada comando recebe um atraso uniforme sorteado entre 0, 1, 2 e 3 passos. O agente observa também o estado aumentado, com histórico, fila e tempos restantes. |
+
+As duas variantes usam o mesmo algoritmo SAC. O exemplo compara uma política treinada sem atraso com outra que foi treinada com atraso e tem acesso ao estado aumentado. As cinco sementes por variante produzem **10 políticas finais e 5 milhões de passos de treino** no total.
+
+### Trecho que define a avaliação
+
+```powershell
+    --eval-delays 0 1 2 3 4 5 6 --eval-episodes 100
+```
+
+| Opção do trecho | O que faz |
+| --- | --- |
+| `--eval-delays 0 1 2 3 4 5 6` | Aplica sete atrasos **fixos**, um de cada vez, de 0 a 6 passos. A 5 Hz, 6 passos representam 1,2 s simulados. |
+| `--eval-episodes 100` | Roda 100 episódios novos para cada política treinada e cada atraso. Usa as sementes de avaliação 100000 a 100099 em todas as condições. São 700 episódios por política e **7.000 no total**. |
+
+O script avalia os pesos finais de cada treino nos sete atrasos, sem atualizá-los. Durante a avaliação com atraso, o SAC de referência sofre o atraso nas ações e continua recebendo a observação original. O SAC+atrasos recebe a observação aumentada em todos os níveis, inclusive no zero. Os avisos `[eval @ step ...]` durante o treino mostram avaliações intermediárias na configuração de treino.
+
+### Trecho que define onde salvar
+
+```powershell
+$saida = "results/benchmark/atrasos-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+
+& $python scripts/benchmark_delays.py --output-dir $saida --duration 100 `
+```
+
+`--duration 100` é o tempo máximo de cada episódio, tanto em treino quanto em avaliação. Em `$saida` ficam os modelos finais em `checkpoints`, os logs em `logs`, os gráficos de treino em `plots` e `avaliacao.csv`. Esse CSV tem uma linha por política, semente de treino e atraso de avaliação, com retorno médio, desvio padrão, taxa de colisão, velocidade média e duração média em passos. A pasta de saída precisa ser nova.
+
+## 9. Ensaio rápido do SAC sem atraso
+
+Use a mesma pista, o mesmo controle apenas de direção e o mesmo limite de 100 s por episódio. Este ensaio usa **uma semente**, **5.000 passos de treino** e **10 episódios de avaliação**. Ele permite conferir o fluxo e inspecionar os resultados antes de rodar o benchmark maior.
+
+### Exemplo completo
+
+```powershell
+$saida = "results/benchmark/sem-atraso-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+
+& $python scripts/benchmark_delays.py --output-dir $saida --duration 100 `
+    --total-steps 5000 --seeds 0 --train-max-delay 0 `
+    --eval-delays 0 --eval-episodes 10
+
+if ($LASTEXITCODE -ne 0) { throw "O ensaio sem atraso falhou." }
+```
+
+### Trecho que encurta o ensaio
+
+```powershell
+    --total-steps 5000 --seeds 0 --train-max-delay 0 `
+    --eval-delays 0 --eval-episodes 10
+```
+
+`--train-max-delay 0` roda apenas o SAC de referência, com a observação original e comandos imediatos. `--eval-delays 0` mantém essa condição nos dez episódios de avaliação. A linha `--output-dir $saida --duration 100` direciona os arquivos para a pasta `sem-atraso-...` e mantém a duração do cenário principal.
