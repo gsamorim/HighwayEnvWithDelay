@@ -75,7 +75,9 @@ class Trainer:
 
             next_obs, reward, terminated, truncated, info = env.step(action)
             done = terminated or truncated
-            self.agent.observe(obs, action, reward, next_obs, done)
+            # Only a true terminal state stops bootstrapping; a time-limit
+            # truncation must still bootstrap from next_obs.
+            self.agent.observe(obs, action, reward, next_obs, terminated)
             obs = next_obs
 
             ep_return += float(reward)

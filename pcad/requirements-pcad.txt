@@ -1,0 +1,10 @@
+# Versões usadas no experimento (iguais às do piloto local).
+# torch vem do índice CPU (ver setup.slurm).
+highway-env==1.12.1
+stable-baselines3==2.9.2
+gymnasium==1.4.0
+numpy==2.5.5
+torch==2.15.0
+pandas==3.1.1
+matplotlib==3.11.2
+pytest
